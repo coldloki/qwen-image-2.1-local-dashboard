@@ -1,0 +1,36 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>qwen-studio</title>
+  <link rel="stylesheet" href="/static/styles.css">
+</head>
+<body>
+  <header class="topbar">
+    <div>
+      <h1>🖼️ qwen-studio</h1>
+      <span class="build-tag" id="build-tag"></span>
+    </div>
+    <div class="actions">
+      <button class="iconbtn" id="theme-btn" title="Toggle theme">🌙</button>
+    </div>
+  </header>
+
+  <nav class="tabs" id="tabs">
+    <button data-tab="generate" class="active">🎨 Generate</button>
+    <button data-tab="history">🖼️ History</button>
+    <button data-tab="settings">⚙️ Settings</button>
+  </nav>
+
+  <main>
+    <section id="tab-generate" class="tab-content"></section>
+    <section id="tab-history" class="tab-content" hidden></section>
+    <section id="tab-settings" class="tab-content" hidden></section>
+  </main>
+
+  <div id="toast-container"></div>
+
+  <script type="module" src="/static/app.js"></script>
+</body>
+</html>
