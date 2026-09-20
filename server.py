@@ -18,6 +18,7 @@ Layout:
 from __future__ import annotations
 
 import asyncio
+import base64
 import io
 import json
 import os
@@ -136,6 +137,7 @@ def init_db() -> None:
 SIZES = [
     "1024x1024", "1280x720", "720x1280",
     "1536x1024", "1024x1536",
+    "512x512", "768x768",
 ]
 
 OUTPUT_FORMATS = ["png", "jpeg", "webp"]
@@ -238,7 +240,7 @@ async def serve_image(image_id: str, kind: str) -> FileResponse:
     conn = db()
     try:
         row = conn.execute(
-            "SELECT filename FROM history WHERE id = ?", (image_id,)
+            "SELECT filename, output_format FROM history WHERE id = ?", (image_id,)
         ).fetchone()
     finally:
         conn.close()
@@ -246,11 +248,19 @@ async def serve_image(image_id: str, kind: str) -> FileResponse:
         raise HTTPException(404, "not found")
     if kind == "thumb":
         path = THUMBS_DIR / f"{image_id}.webp"
+        media_type = "image/webp"
     else:
         path = IMAGES_DIR / row["filename"]
+        ext = (row["output_format"] or "").lower()
+        media_type = {
+            "png": "image/png",
+            "jpg": "image/jpeg",
+            "jpeg": "image/jpeg",
+            "webp": "image/webp",
+        }.get(ext, "application/octet-stream")
     if not path.exists():
         raise HTTPException(404, "file missing on disk")
-    return FileResponse(path)
+    return FileResponse(path, media_type=media_type)
 
 
 # ============================================================ Brain proxy
@@ -345,9 +355,23 @@ async def generate(req: GenerateRequest) -> StreamingResponse:
                 item = (data.get("data") or [{}])[0]
                 b64 = item.get("b64_json") or item.get("base64")
                 if not b64:
+                    # Brain returns a URL instead of b64. Follow it.
+                    url_or_path = item.get("url") or item.get("file_path")
+                    if url_or_path:
+                        # Resolve relative URL against BRAIN_URL
+                        if url_or_path.startswith("/"):
+                            full = BRAIN_URL.rstrip("/") + url_or_path
+                        elif url_or_path.startswith("output/"):
+                            full = BRAIN_URL.rstrip("/") + "/" + url_or_path
+                        else:
+                            full = url_or_path
+                        async with httpx.AsyncClient(timeout=60) as cli:
+                            r2 = await cli.get(full)
+                            r2.raise_for_status()
+                            b64 = base64.b64encode(r2.content).decode("ascii")
+                if not b64:
                     yield _sse({"error": f"no b64_json in response: {json.dumps(data)[:300]}"})
                     return
-                import base64
                 raw = base64.b64decode(b64)
                 elapsed = time.time() - t0
                 # Decode dimensions

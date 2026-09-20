@@ -26,7 +26,7 @@ export async function render(root) {
         <div>
           <label>Default size</label>
           <select id="def_size">
-            ${fillSelect(['1024x1024','1280x720','720x1280','1536x1024','1024x1536'], settings.default_size || '1024x1024')}
+            ${fillSelect(['1024x1024','1280x720','720x1280','1536x1024','1024x1536','768x768','512x512'], settings.default_size || '1024x1024')}
           </select>
         </div>
         <div>

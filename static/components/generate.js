@@ -44,7 +44,7 @@ export async function render(root) {
         <div>
           <label for="size">Size</label>
           <select id="size">
-            ${fillSelect(['1024x1024','1280x720','720x1280','1536x1024','1024x1536'], size)}
+            ${fillSelect(['1024x1024','1280x720','720x1280','1536x1024','1024x1536','768x768','512x512'], size)}
           </select>
         </div>
         <div>

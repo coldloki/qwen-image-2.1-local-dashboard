@@ -47,6 +47,7 @@ export async function render(root) {
 function paint() {
   const host = document.getElementById('gallery-host');
   const count = document.getElementById('count');
+  if (!host || !count) return;  // History tab not mounted yet
   count.textContent = `${items.length} generation${items.length === 1 ? '' : 's'}`;
   if (!items.length) {
     host.innerHTML = `<div class="empty">No history yet. Generate something on the 🎨 tab.</div>`;
