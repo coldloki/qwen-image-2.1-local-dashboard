@@ -9,15 +9,14 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-COPY server.py ./
+COPY server.py .
 COPY static ./static
 
-# Data dir is bind-mounted at runtime so DB + images persist on host.
-RUN mkdir -p /app/data/images /app/data/thumbs
-
-ENV PYTHONUNBUFFERED=1
-ENV PORT=8000
+ENV BRAIN_URL=http://qwen-image-sglang:30010 \
+    THUMB_MAX_SIDE=384 \
+    THUMB_QUALITY=78 \
+    BUILD_TAG=container
 
 EXPOSE 8000
 
-CMD ["python", "-m", "uvicorn", "server:app", "--host", "0.0.0.0", "--port", "8000"]
+CMD ["uvicorn", "server:app", "--host", "0.0.0.0", "--port", "8000"]
