@@ -10,6 +10,7 @@ import { icon } from './icons.js';
 let presets = [];
 let currentRequest = null;  // AbortController
 let lastResult = null;       // last successful generation (for reload)
+let refImageIds = [];        // up to 4 history ids selected as img2img references
 
 export async function render(root) {
   const settings = await api.get('/api/settings');
@@ -19,6 +20,10 @@ export async function render(root) {
   // read this FIRST so an explicit user action (load preset / reroll)
   // overrides the sticky "last generated" snapshot.
   const reroll = consumeReroll();
+  // Loading a reroll discards any previously-selected refs (a reroll
+  // is meant to reproduce the original — refs would silently change
+  // the result). Clear refs explicitly when a reroll lands.
+  if (reroll) refImageIds = [];
 
   // Sticky "last generated" snapshot — used as the initial value when
   // nothing else has set a target. We only honour this when there's
@@ -169,6 +174,18 @@ export async function render(root) {
             </label>
           </div>
 
+          <div class="refs-section" id="refs-section">
+            <div class="refs-label-row">
+              <label>Reference images
+                <span class="hint" title="Up to 4 images that guide the generation (img2img). Low steps = closer to the source. Empty = pure generation.">?</span>
+              </label>
+              <span class="refs-count" id="refs-count">0 / 4</span>
+            </div>
+            <div class="refs-slots" id="refs-slots">
+              <!-- 4 empty slots get injected by paintRefs() -->
+            </div>
+          </div>
+
           <details class="advanced" id="advanced-details">
             <summary>
               <span class="advanced-label">Advanced</span>
@@ -256,6 +273,7 @@ export async function render(root) {
   });
   seedRandom.addEventListener('change', paintSeed);
   paintSeed();
+  paintRefs();
 
   // Preset select wiring
   const presetSelect = document.getElementById('preset-select');
@@ -311,6 +329,7 @@ export async function render(root) {
       true_cfg_scale: parseFloat(document.getElementById('true-cfg').value),
       enable_teacache: document.getElementById('teacache').checked,
       n: parseInt(document.getElementById('n').value, 10),
+      reference_image_ids: refImageIds.length ? refImageIds : undefined,
     };
 
     lastResults = [];
@@ -649,4 +668,109 @@ export function consumeReroll() {
   if (!raw) return null;
   sessionStorage.removeItem('gen:reroll');
   try { return JSON.parse(raw); } catch { return null; }
+}
+
+
+// ============================================================ Reference images
+
+// 4 slots, click an empty one to open the gallery picker.
+function paintRefs() {
+  const slotsEl = document.getElementById('refs-slots');
+  if (!slotsEl) return;
+  slotsEl.innerHTML = '';
+  for (let i = 0; i < 4; i++) {
+    const id = refImageIds[i] || null;
+    const cell = document.createElement('button');
+    cell.type = 'button';
+    cell.className = 'ref-slot' + (id ? ' filled' : ' empty');
+    cell.dataset.idx = String(i);
+    if (id) {
+      // We need the thumb url — fetch history if we don't have it cached.
+      cell.innerHTML = `<img alt="" data-id="${id}"><span class="ref-slot-x" title="Remove">${icon('x-mark', { size: 12 })}</span>`;
+      resolveThumb(id).then(url => {
+        const img = cell.querySelector('img');
+        if (img) img.src = url;
+      });
+    } else {
+      cell.innerHTML = `<span class="ref-slot-add">${icon('plus', { size: 18 })}</span>`;
+    }
+    cell.addEventListener('click', (e) => {
+      if (e.target.closest('.ref-slot-x')) {
+        refImageIds.splice(i, 1);
+        paintRefs();
+        return;
+      }
+      openRefPicker(i);
+    });
+    slotsEl.appendChild(cell);
+  }
+  const count = document.getElementById('refs-count');
+  if (count) count.textContent = `${refImageIds.length} / 4`;
+}
+
+// Caches history items by id so ref thumbnails resolve quickly.
+const _historyCache = { items: null, ts: 0 };
+async function getHistoryItems() {
+  const stale = Date.now() - _historyCache.ts > 30000;
+  if (!_historyCache.items || stale) {
+    _historyCache.items = await api.get('/api/history');
+    _historyCache.ts = Date.now();
+  }
+  return _historyCache.items;
+}
+async function resolveThumb(id) {
+  const items = await getHistoryItems();
+  const it = items.find(x => x.id === id);
+  return it ? it.thumb_url : '';
+}
+
+// Gallery picker dialog — choose one image to insert into a ref slot.
+async function openRefPicker(slotIdx) {
+  const existing = document.getElementById('ref-picker');
+  if (existing) existing.remove();
+  const dlg = document.createElement('dialog');
+  dlg.id = 'ref-picker';
+  dlg.className = 'ref-picker';
+  dlg.innerHTML = `
+    <h3>Pick a reference image</h3>
+    <div class="ref-picker-grid" id="ref-picker-grid">
+      <div class="ref-picker-loading">Loading…</div>
+    </div>
+    <div class="ref-picker-actions">
+      <button type="button" class="iconbtn" id="ref-picker-cancel">Cancel</button>
+    </div>
+  `;
+  document.body.appendChild(dlg);
+  dlg.querySelector('#ref-picker-cancel').addEventListener('click', () => dlg.close());
+  dlg.addEventListener('close', () => dlg.remove());
+  dlg.addEventListener('click', (e) => { if (e.target === dlg) dlg.close(); });
+  dlg.showModal();
+  const grid = dlg.querySelector('#ref-picker-grid');
+  const items = await getHistoryItems();
+  if (!items.length) {
+    grid.innerHTML = '<div class="ref-picker-empty">No images yet — generate something first.</div>';
+    return;
+  }
+  grid.innerHTML = '';
+  for (const it of items) {
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.className = 'ref-picker-cell';
+    b.title = (it.prompt || '').slice(0, 80);
+    const usedElsewhere = refImageIds.includes(it.id) && refImageIds[slotIdx] !== it.id;
+    b.innerHTML = `<img alt="" src="${it.thumb_url}">${usedElsewhere ? '<span class="ref-picker-dup">already used</span>' : ''}`;
+    b.addEventListener('click', () => {
+      // Replace or insert at this slot
+      refImageIds[slotIdx] = it.id;
+      refImageIds = refImageIds.filter(x => x); // compact
+      paintRefs();
+      dlg.close();
+    });
+    grid.appendChild(b);
+  }
+}
+
+// Wire up paintRefs() after render()
+export function initRefs() {
+  paintRefs();
 }

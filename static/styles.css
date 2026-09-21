@@ -1458,3 +1458,130 @@ dialog.upscale-modal h3 {
 .tile-badge svg { width: 12px; height: 12px; }
 .tile-badge.upscale   { border-color: var(--accent);  color: var(--accent); }
 .tile-badge.refs      { border-color: var(--accent-2); color: var(--accent-2); }
+
+
+/* ===== Reference images (generate tab) ===== */
+.refs-section {
+  margin: 0.9rem 0 0.4rem;
+}
+.refs-label-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  margin-bottom: 0.5rem;
+}
+.refs-label-row label {
+  font-weight: 500;
+  font-size: 0.9rem;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+}
+.refs-count {
+  font-size: 0.8rem;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+.refs-slots {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: var(--space-3);
+}
+.ref-slot {
+  position: relative;
+  aspect-ratio: 1 / 1;
+  border: 1.5px dashed var(--border);
+  border-radius: 10px;
+  background: var(--surface);
+  cursor: pointer;
+  padding: 0;
+  overflow: hidden;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: border-color 120ms, background 120ms;
+}
+.ref-slot.empty:hover { border-color: var(--accent); background: rgba(233,110,0,0.04); }
+.ref-slot.filled { border-style: solid; border-color: var(--accent-2); }
+.ref-slot.filled img { width: 100%; height: 100%; object-fit: cover; }
+.ref-slot-add {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--muted);
+}
+.ref-slot-x {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  background: rgba(0,0,0,0.65);
+  color: white;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  cursor: pointer;
+  font-size: 10px;
+}
+.ref-slot-x:hover { background: rgba(0,0,0,0.9); }
+
+/* ===== Reference picker dialog ===== */
+dialog.ref-picker {
+  width: min(960px, calc(100vw - 2rem));
+  max-height: 86vh;
+  padding: 1.25rem;
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  background: var(--surface);
+  color: var(--text);
+  box-shadow: 0 24px 60px rgba(0,0,0,0.4);
+}
+dialog.ref-picker::backdrop { background: rgba(0,0,0,0.55); }
+dialog.ref-picker h3 { margin: 0 0 0.9rem; font-size: 1.05rem; }
+.ref-picker-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(120px, 1fr));
+  gap: var(--space-3);
+  max-height: 65vh;
+  overflow-y: auto;
+  padding-right: 0.4rem;
+}
+.ref-picker-cell {
+  position: relative;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 0;
+  overflow: hidden;
+  cursor: pointer;
+  background: transparent;
+  aspect-ratio: 1 / 1;
+}
+.ref-picker-cell:hover { border-color: var(--accent); }
+.ref-picker-cell img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.ref-picker-dup {
+  position: absolute;
+  inset: 0;
+  background: rgba(0,0,0,0.55);
+  color: white;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 0.8rem;
+  font-weight: 500;
+  pointer-events: none;
+}
+.ref-picker-loading,
+.ref-picker-empty {
+  grid-column: 1 / -1;
+  text-align: center;
+  padding: 2rem 0;
+  color: var(--muted);
+}
+.ref-picker-actions {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 0.8rem;
+}
