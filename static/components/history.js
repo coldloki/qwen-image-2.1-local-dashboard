@@ -101,6 +101,10 @@ export async function render(root) {
           ${icon('chevron-down', { size: 22, cls: 'lb-chevron-right' })}
         </button>
         <div class="lb-actions">
+          <button class="iconbtn primary" id="lb-download" title="Download this image">
+            ${icon('arrow-down-tray', { size: 15 })}
+            <span>Download</span>
+          </button>
           <button class="iconbtn" id="lb-reroll" title="Re-roll with these params">
             ${icon('dice', { size: 15 })}
             <span>Re-roll</span>
@@ -195,6 +199,26 @@ function bindLightbox() {
   document.getElementById('lb-close').addEventListener('click', () => dialog.close());
   document.getElementById('lb-prev').addEventListener('click', () => nav(-1));
   document.getElementById('lb-next').addEventListener('click', () => nav(+1));
+  document.getElementById('lb-download').addEventListener('click', () => {
+    if (activeIndex < 0) return;
+    const it = view[activeIndex];
+    // The /images/<id>/thumb endpoint returns the thumbnail — use the
+    // /images/<id>/original endpoint for the full-resolution file.
+    const url = `/images/${it.id}/original`;
+    const a = document.createElement('a');
+    a.href = url;
+    // Filename: <prompt-slug>-<id>.<ext>  (ext falls back to png).
+    const slug = (it.prompt || 'image')
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, '-')
+      .replace(/^-|-$/g, '')
+      .slice(0, 40) || 'image';
+    const ext = (it.format || 'png').toLowerCase().replace(/^jpe?g$/, 'jpg');
+    a.download = `${slug}-${it.id.slice(0, 8)}.${ext}`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+  });
   document.getElementById('lb-reroll').addEventListener('click', () => {
     if (activeIndex >= 0) reroll(view[activeIndex]);
   });
