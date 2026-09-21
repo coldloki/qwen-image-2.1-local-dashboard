@@ -25,7 +25,7 @@ def main():
         page.wait_for_selector("#gallery-host", state="visible")
         page.screenshot(path=str(ART / "mobile-02-history.png"), full_page=True)
 
-        # Verify grid is single column at this width
+        # Verify grid uses TWO columns at this width (412px is between 360 and 480 breakpoint)
         cols = page.evaluate("""
             () => {
               const el = document.querySelector('.masonry');
@@ -34,8 +34,11 @@ def main():
             }
         """)
         print(f"mobile grid columns: {cols}")
-        if cols is None or cols != 1:
-            print(f"WARN: expected 1 column on mobile, got {cols}")
+        if cols is None:
+            sys.exit("FAIL: masonry not found")
+        if cols != 2:
+            print(f"FAIL: expected 2 columns on mobile (412px), got {cols}")
+            sys.exit(1)
 
         # Settings
         page.click('button[data-tab="settings"]')

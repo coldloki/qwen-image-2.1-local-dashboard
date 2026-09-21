@@ -54,18 +54,36 @@ def main():
         expect(gen).to_be_visible()
         expect(page.locator("button#submit-btn")).to_be_visible()
 
-        # ── 3. Theme toggle
-        step("theme toggle")
+        # ── 3. Theme toggle (icon should be opposite: dark→☀, light→🌙)
+        step("theme toggle icon logic")
         theme_before = page.evaluate("document.documentElement.dataset.theme")
+        icon_before = (page.locator("#theme-btn").text_content() or "").strip()
+        # When theme=dark, icon should be ☀ (the user reports a button to switch away)
+        expected_icon_when_dark = "☀"
+        expected_icon_when_light = "🌙"
+        if theme_before == "dark":
+            assert icon_before == expected_icon_when_dark, f"dark theme should show ☀, got {icon_before!r}"
+        else:
+            assert icon_before == expected_icon_when_light, f"light theme should show 🌙, got {icon_before!r}"
+        print(f"    dark→{expected_icon_when_dark}, light→{expected_icon_when_light} ({theme_before}={icon_before!r})")
+        # Flip
         page.click("#theme-btn")
         page.wait_for_function(
             f"document.documentElement.dataset.theme !== '{theme_before}'"
         )
         theme_after = page.evaluate("document.documentElement.dataset.theme")
+        icon_after = (page.locator("#theme-btn").text_content() or "").strip()
         assert theme_before != theme_after, f"theme didn't flip: {theme_before} == {theme_after}"
-        print(f"    theme: {theme_before} → {theme_after}")
+        if theme_after == "dark":
+            assert icon_after == expected_icon_when_dark, f"dark theme should show ☀, got {icon_after!r}"
+        else:
+            assert icon_after == expected_icon_when_light, f"light theme should show 🌙, got {icon_after!r}"
+        print(f"    flip {theme_before}:{icon_before!r} → {theme_after}:{icon_after!r}")
         # Flip back so screenshots stay consistent
         page.click("#theme-btn")
+        page.wait_for_function(
+            f"document.documentElement.dataset.theme === '{theme_before}'"
+        )
 
         # ── 4. Settings → add preset
         step("settings tab + add preset")
@@ -167,6 +185,31 @@ def main():
         if page.locator('.preset-row[data-name="e2e-test-preset"]').count() > 0:
             fails.append("preset still present after delete")
 
+        # ── 11. Tab persistence across refresh
+        step("tab persists across refresh (history)")
+        page.click('button[data-tab="history"]')
+        page.wait_for_selector("#gallery-host .masonry", state="visible")
+        # Snapshot URL hash and active tab before refresh
+        hash_before = page.evaluate("location.hash")
+        active_before = (
+            page.locator('nav.tabs button.active').get_attribute("data-tab")
+            if page.locator('nav.tabs button.active').count() > 0
+            else None
+        )
+        page.reload(wait_until="networkidle")
+        page.wait_for_selector('button[data-tab="history"]', state="visible")
+        active_after = (
+            page.locator('nav.tabs button.active').get_attribute("data-tab")
+            if page.locator('nav.tabs button.active').count() > 0
+            else None
+        )
+        gallery_visible_after = page.locator("#gallery-host .masonry").is_visible()
+        hash_after = page.evaluate("location.hash")
+        print(f"    hash: {hash_before!r} → {hash_after!r}; active: {active_before} → {active_after}; gallery visible: {gallery_visible_after}")
+        if active_after != "history":
+            fails.append(f"refresh didn't restore history tab (active={active_after!r})")
+        if not gallery_visible_after:
+            fails.append("history masonry not visible after refresh")
         # ── Console check
         errs = [m for m in console if m[0] in ("error", "pageerror")]
         if errs:

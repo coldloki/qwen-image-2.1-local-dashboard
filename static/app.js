@@ -24,21 +24,35 @@ async function activate(name) {
     mounted[name] = true;
     await renders[name](sections[name]);
   }
+  if (location.hash.replace('#', '') !== name) {
+    history.replaceState(null, '', `#${name}`);
+  }
+  localStorage.setItem('activeTab', name);
 }
 
 tabs.forEach(b => b.addEventListener('click', () => activate(b.dataset.tab)));
+window.addEventListener('hashchange', () => {
+  const t = (location.hash || '').replace('#', '');
+  if (sections[t]) activate(t);
+});
 
 // Theme toggle
 const themeBtn = document.getElementById('theme-btn');
 const stored = localStorage.getItem('theme') || 'dark';
 document.documentElement.dataset.theme = stored;
-themeBtn.textContent = stored === 'dark' ? '🌙' : '☀️';
+function paintThemeBtn() {
+  const cur = document.documentElement.dataset.theme;
+  themeBtn.textContent = cur === 'dark' ? '☀' : '🌙';
+  themeBtn.setAttribute('aria-label', `Switch to ${cur === 'dark' ? 'light' : 'dark'} theme`);
+  themeBtn.title = `Switch to ${cur === 'dark' ? 'light' : 'dark'} theme`;
+}
+paintThemeBtn();
 themeBtn.addEventListener('click', () => {
   const cur = document.documentElement.dataset.theme;
   const next = cur === 'dark' ? 'light' : 'dark';
   document.documentElement.dataset.theme = next;
   localStorage.setItem('theme', next);
-  themeBtn.textContent = next === 'dark' ? '🌙' : '☀️';
+  paintThemeBtn();
 });
 
 // Build tag
@@ -46,5 +60,9 @@ api.get('/api/meta').then(m => {
   document.getElementById('build-tag').textContent = m.build;
 });
 
-// Mount initial tab
-activate('generate');
+// Mount initial tab — prefer hash, else last persisted, else default
+const initialTab =
+  (location.hash || '').replace('#', '') ||
+  localStorage.getItem('activeTab') ||
+  'generate';
+activate(['generate', 'history', 'settings'].includes(initialTab) ? initialTab : 'generate');
