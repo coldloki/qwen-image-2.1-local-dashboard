@@ -106,7 +106,7 @@ export async function render(root) {
             <span>Download</span>
           </button>
           <button class="iconbtn" id="lb-reroll" title="Re-roll with these params">
-            ${icon('dice', { size: 15 })}
+            ${icon('arrow-path', { size: 15 })}
             <span>Re-roll</span>
           </button>
           <button class="iconbtn danger" id="lb-delete" title="Delete this image">

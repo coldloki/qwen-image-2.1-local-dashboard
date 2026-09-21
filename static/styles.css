@@ -1077,6 +1077,28 @@ dialog.lightbox .lb-actions .iconbtn.danger:hover {
   border-color: rgba(220,53,69,0.9);
 }
 
+/* Mobile: drop the labels and tighten so all three buttons fit
+   comfortably on narrow viewports. The title attribute keeps the
+   action discoverable via long-press / accessibility. */
+@media (max-width: 640px) {
+  dialog.lightbox .lb-actions {
+    gap: 0.4rem;
+    margin-top: 0.5rem;
+    justify-content: center;
+  }
+  dialog.lightbox .lb-actions .iconbtn {
+    padding: 0.55rem 0.65rem;
+    font-size: 0.95rem;
+  }
+  dialog.lightbox .lb-actions .iconbtn span {
+    display: none;
+  }
+  dialog.lightbox .lb-actions .iconbtn svg {
+    width: 18px;
+    height: 18px;
+  }
+}
+
 /* ========== Settings tab ========== */
 
 .settings-section {
