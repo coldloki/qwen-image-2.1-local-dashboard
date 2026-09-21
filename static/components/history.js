@@ -332,22 +332,29 @@ function bindLightbox() {
     const it = view[activeIndex];
     if (!confirm(`Delete this image?\n\n"${(it.prompt || '').slice(0, 80)}${(it.prompt||'').length>80?'…':''}"`)) return;
     await api.del(`/api/history/${it.id}`);
+    // Drop the entry from BOTH the full list and the filtered view.
+    // (Filtering view alone would leave the masonry painting a tile
+    //  that no longer exists on disk.)
     items = items.filter(x => x.id !== it.id);
+    view = view.filter(x => x.id !== it.id);
     if (ui.selected.has(it.id)) ui.selected.delete(it.id);
-    if (!items.length) {
+    if (!view.length) {
+      // No more items in the current filter — close the lightbox.
       dialog.close();
       activeIndex = -1;
       paint();
       toast('Deleted', 'success');
       return;
     }
-    activeIndex = Math.min(activeIndex, view.length - 1);
-    if (activeIndex < 0) {
-      dialog.close();
-    } else {
-      openLightbox(activeIndex);
-    }
+    // Advance: prefer the image that took the deleted slot's place
+    // (the natural "next" position). If we deleted the last one,
+    // step back. Either way, the lightbox stays open on a real entry
+    // and the deleted one is clearly gone from view.
+    const nextIndex = Math.min(activeIndex, view.length - 1);
+    activeIndex = nextIndex;
+    openLightbox(activeIndex);
     paint();
+    toast('Deleted', 'success');
   });
 
   document.getElementById('lb-upscale').addEventListener('click', () => {
