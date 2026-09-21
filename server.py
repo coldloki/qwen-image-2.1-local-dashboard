@@ -117,20 +117,24 @@ for d in (DATA_DIR, IMAGES_DIR, THUMBS_DIR):
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS history (
-    id            TEXT PRIMARY KEY,
-    ts            TEXT NOT NULL,
-    prompt        TEXT NOT NULL,
-    negative      TEXT,
-    width         INTEGER NOT NULL,
-    height        INTEGER NOT NULL,
-    steps         INTEGER NOT NULL,
-    guidance      REAL NOT NULL,
-    seed          INTEGER,
-    output_format TEXT NOT NULL,
-    filename      TEXT NOT NULL,
-    elapsed_s     REAL NOT NULL,
-    size_bytes    INTEGER NOT NULL,
-    has_alpha     INTEGER NOT NULL DEFAULT 0
+    id                  TEXT PRIMARY KEY,
+    ts                  TEXT NOT NULL,
+    prompt              TEXT NOT NULL,
+    negative            TEXT,
+    width               INTEGER NOT NULL,
+    height              INTEGER NOT NULL,
+    steps               INTEGER NOT NULL,
+    guidance            REAL NOT NULL,
+    seed                INTEGER,
+    output_format       TEXT NOT NULL,
+    filename            TEXT NOT NULL,
+    elapsed_s           REAL NOT NULL,
+    size_bytes          INTEGER NOT NULL,
+    has_alpha           INTEGER NOT NULL DEFAULT 0,
+    -- Lineage / kind metadata (added for upscale + reference images)
+    kind                TEXT NOT NULL DEFAULT 'generate',
+    parent_id           TEXT,
+    reference_image_ids TEXT
 );
 
 CREATE INDEX IF NOT EXISTS history_ts_idx ON history(ts DESC);
@@ -187,6 +191,32 @@ def init_db() -> None:
             conn.execute(
                 "ALTER TABLE history ADD COLUMN has_alpha INTEGER NOT NULL DEFAULT 0"
             )
+        # Lineage / kind migrations (added for upscale + reference images)
+        if "kind" not in existing_cols:
+            conn.execute(
+                "ALTER TABLE history ADD COLUMN kind TEXT NOT NULL DEFAULT 'generate'"
+            )
+        if "parent_id" not in existing_cols:
+            conn.execute(
+                "ALTER TABLE history ADD COLUMN parent_id TEXT"
+            )
+        if "reference_image_ids" not in existing_cols:
+            conn.execute(
+                "ALTER TABLE history ADD COLUMN reference_image_ids TEXT"
+            )
+        # Now that the columns exist (whether they were created via
+        # CREATE TABLE in SCHEMA or via ALTER above), ensure the new
+        # indexes are present. CREATE INDEX IF NOT EXISTS is a no-op
+        # when the index already exists, but on a legacy DB the
+        # column-add + index-create must happen in this order —
+        # running CREATE INDEX inline in SCHEMA fails on tables that
+        # were created before the columns existed.
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS history_parent_idx ON history(parent_id)"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS history_kind_idx ON history(kind)"
+        )
         for k, v in DEFAULT_SETTINGS.items():
             conn.execute(
                 "INSERT OR IGNORE INTO settings(key, value) VALUES (?, ?)",
@@ -227,6 +257,32 @@ class GenerateRequest(BaseModel):
     # Batch — generate N images in one request. Capped at 4 because
     # larger batches inflate VRAM and our slot policy is 1 in flight.
     n: int = Field(1, ge=1, le=4)
+    # Reference images (img2img / inpainting flow). When set, the
+    # backend routes to the brain's /v1/images/edits endpoint and
+    # passes these image_ids as base image input. Empty list (default)
+    # means pure txt2img through /v1/images/generations.
+    # Capped at 4 because the brain's edits endpoint accepts an
+    # array, but more than 4 rarely helps and slows generation a lot.
+    reference_image_ids: list[str] = Field(default_factory=list, max_length=4)
+    # Mask for inpainting (paired with reference_image_ids[0]).
+    # Not exposed in v1 — placeholder for the next round.
+    mask_id: str | None = None
+
+
+class UpscaleRequest(BaseModel):
+    """Up-scale an existing history image via the brain's edits
+    endpoint with `enable_upscaling: true`.
+
+    The server loads the source image by `history_id`, POSTs it to
+    the brain along with the source's prompt (override via
+    `prompt` if you want), and persists the result as a new
+    history row with `kind='upscale'` and `parent_id=<source>`.
+    """
+    history_id: str
+    scale: int = Field(2, ge=2, le=4)
+    prompt: str | None = None  # default = source prompt
+    negative: str | None = None  # default = source negative
+    steps: int | None = None  # default 20; lower than full gen
 
 
 class PresetIn(BaseModel):
@@ -305,6 +361,17 @@ def _make_thumb(src_path: Path, dest_path: Path) -> None:
 
 
 def _row_to_dict(row: sqlite3.Row) -> dict[str, Any]:
+    keys = row.keys()
+    # reference_image_ids is stored as a JSON array string; parse to
+    # a list for the client. Empty / null → empty list.
+    raw_refs = row["reference_image_ids"] if "reference_image_ids" in keys else None
+    if raw_refs:
+        try:
+            refs = json.loads(raw_refs)
+        except (ValueError, TypeError):
+            refs = []
+    else:
+        refs = []
     return {
         "id": row["id"],
         "ts": row["ts"],
@@ -319,7 +386,11 @@ def _row_to_dict(row: sqlite3.Row) -> dict[str, Any]:
         "filename": row["filename"],
         "elapsed_s": row["elapsed_s"],
         "size_bytes": row["size_bytes"],
-        "has_alpha": bool(row["has_alpha"]) if "has_alpha" in row.keys() else False,
+        "has_alpha": bool(row["has_alpha"]) if "has_alpha" in keys else False,
+        # Lineage / kind (added for upscale + reference images)
+        "kind": row["kind"] if "kind" in keys and row["kind"] else "generate",
+        "parent_id": row["parent_id"] if "parent_id" in keys else None,
+        "reference_image_ids": refs,
         "thumb_url": f"/images/{row['id']}/thumb",
         "image_url": f"/images/{row['id']}/original",
     }
@@ -600,6 +671,38 @@ async def generate(req: GenerateRequest, request: Request):
         }
 
     server_url = _get_setting("server_url", BRAIN_URL)
+    has_refs = bool(req.reference_image_ids)
+
+    # When reference images are provided, route to the brain's edits
+    # endpoint (which accepts an image[] multipart payload) instead of
+    # the generations endpoint (JSON-only). We load the files here and
+    # hand them to _run_brain_and_persist via upload_files.
+    upload_files: list[tuple[str, bytes, str]] = []
+    if has_refs:
+        conn = db()
+        try:
+            for rid_ref in req.reference_image_ids:
+                row = conn.execute(
+                    "SELECT filename FROM history WHERE id = ?", (rid_ref,)
+                ).fetchone()
+                if not row:
+                    return JSONResponse(
+                        status_code=404,
+                        content={"error": f"reference image not found: {rid_ref}"},
+                    )
+                src_path = IMAGES_DIR / row["filename"]
+                if not src_path.exists():
+                    return JSONResponse(
+                        status_code=404,
+                        content={"error": f"reference file missing on disk: {rid_ref}"},
+                    )
+                ext = src_path.suffix.lstrip(".").lower()
+                ftype = {"png": "image/png", "jpg": "image/jpeg",
+                         "jpeg": "image/jpeg", "webp": "image/webp"}.get(ext, "image/png")
+                upload_files.append((src_path.name, src_path.read_bytes(), ftype))
+        finally:
+            conn.close()
+
     payload = {
         "model": "Qwen/Qwen-Image-2.1",
         "prompt": req.prompt,
@@ -615,6 +718,8 @@ async def generate(req: GenerateRequest, request: Request):
     }
     if not req.negative:
         payload.pop("negative_prompt")
+
+    brain_path = "/v1/images/edits" if has_refs else "/v1/images/generations"
 
     async def event_stream():
         yield _sse({"phase": "connecting", "msg": f"Calling {server_url}…"})
@@ -666,6 +771,9 @@ async def generate(req: GenerateRequest, request: Request):
                 queue=queue,
                 stop=stop,
                 t0=t0,
+                brain_path=brain_path,
+                upload_files=upload_files or None,
+                reference_image_ids=req.reference_image_ids,
             )
         )
 
@@ -750,6 +858,20 @@ async def _run_brain_and_persist(
     queue: asyncio.Queue,
     stop: asyncio.Event,
     t0: float,
+    # Lineage / kind metadata. Defaults match plain txt2img so the
+    # existing generate endpoint doesn't need to specify anything.
+    # _run_upscale() passes kind="upscale" + parent_id=<source>.
+    # _run_generate() with reference images passes
+    # reference_image_ids=<list>.
+    kind: str = "generate",
+    parent_id: str | None = None,
+    reference_image_ids: list[str] | None = None,
+    # Override the brain URL — _run_upscale routes to /v1/images/edits
+    # (multipart upload) instead of /v1/images/generations (JSON).
+    brain_path: str = "/v1/images/generations",
+    # Optional pre-loaded image bytes + filename — used by _run_upscale
+    # to send the source image as multipart form-data to /edits.
+    upload_files: list[tuple[str, bytes, str]] | None = None,
 ) -> None:
     """Call the brain, persist results, update _GEN_ACTIVE.
 
@@ -766,10 +888,26 @@ async def _run_brain_and_persist(
 
         async with httpx.AsyncClient(timeout=httpx.Timeout(600.0, connect=10.0)) as c:
             try:
-                resp = await c.post(
-                    f"{server_url.rstrip('/')}/v1/images/generations",
-                    json=payload,
-                )
+                if upload_files:
+                    # Multipart path — used by _run_upscale and by
+                    # /generate when reference_image_ids is non-empty.
+                    # Brain edits endpoint accepts files under either
+                    # 'image' (single) or 'image[]' (multiple).
+                    files = []
+                    for fname, fbytes, ftype in upload_files:
+                        files.append(("image[]", (fname, fbytes, ftype)))
+                    # Payload fields go alongside as plain form fields.
+                    form = {k: ("" if v is None else str(v)) for k, v in payload.items()}
+                    resp = await c.post(
+                        f"{server_url.rstrip('/')}{brain_path}",
+                        data=form,
+                        files=files,
+                    )
+                else:
+                    resp = await c.post(
+                        f"{server_url.rstrip('/')}{brain_path}",
+                        json=payload,
+                    )
             except httpx.RequestError as e:
                 err = f"brain unreachable: {type(e).__name__}: {e}"
                 await queue.put(_sse({"error": err}))
@@ -852,8 +990,9 @@ async def _run_brain_and_persist(
                     """INSERT INTO history
                        (id, ts, prompt, negative, width, height, steps, guidance,
                         seed, output_format, filename, elapsed_s, size_bytes,
-                        has_alpha)
-                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                        has_alpha, kind, parent_id, reference_image_ids)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                               ?, ?, ?)""",
                     (
                         image_id,
                         now_iso,
@@ -866,6 +1005,12 @@ async def _run_brain_and_persist(
                         round(elapsed, 2),
                         len(raw),
                         1 if has_alpha else 0,
+                        # Lineage / kind — passed in by the caller
+                        # (the generate handler passes defaults;
+                        # _run_upscale passes kind="upscale" + parent_id).
+                        kind,
+                        parent_id,
+                        json.dumps(reference_image_ids or []),
                     ),
                 )
                 image_ids.append(image_id)
@@ -905,6 +1050,216 @@ async def _run_brain_and_persist(
         # Stop the tick pump once we know the brain is done (success
         # or failure).
         stop.set()
+
+
+@app.post("/api/upscale", response_model=None)
+async def upscale(req: UpscaleRequest, request: Request):
+    """Up-scale an existing history image via brain's edits endpoint.
+
+    Loads the source by `req.history_id`, sends it to
+    `POST /v1/images/edits` with `enable_upscaling: true` and
+    `upscaling_scale: req.scale`. SSE stream of progress events.
+    The result is persisted as a new history row with
+    `kind='upscale'` and `parent_id=<source>`.
+    """
+    # Look up the source row first — we need its prompt, negative,
+    # width, height before we can claim a slot. We don't claim the
+    # slot until after this lookup so a bad history_id returns 404
+    # without burning the in-flight budget.
+    conn = db()
+    try:
+        src = conn.execute(
+            "SELECT id, prompt, negative, width, height, output_format "
+            "FROM history WHERE id = ?", (req.history_id,)
+        ).fetchone()
+    finally:
+        conn.close()
+    if not src:
+        return JSONResponse(
+            status_code=404,
+            content={"error": f"history_id not found: {req.history_id}"},
+        )
+    src_path = IMAGES_DIR / _row_filename(src)
+    if not src_path.exists():
+        return JSONResponse(
+            status_code=404,
+            content={"error": f"source file missing on disk: {req.history_id}"},
+        )
+
+    # Same in-flight cap as /api/generate.
+    rid = f"{int(time.time() * 1000)}-{uuid.uuid4().hex[:6]}"
+    async with _GEN_LOCK:
+        in_flight = len(_GEN_IN_FLIGHT)
+        if 0 < _GEN_MAX and in_flight >= _GEN_MAX:
+            oldest_started = min(_GEN_IN_FLIGHT.values()) if _GEN_IN_FLIGHT else time.time()
+            age = max(1, int(time.time() - oldest_started))
+            return JSONResponse(
+                status_code=409,
+                content={
+                    "error": "busy",
+                    "detail": f"A generation is already in flight ({in_flight}/{_GEN_MAX}). Please wait.",
+                    "retry_after": age,
+                    "in_flight": in_flight,
+                    "max": _GEN_MAX,
+                },
+                headers={"Retry-After": str(age)},
+            )
+        _GEN_IN_FLIGHT[rid] = time.time()
+        request.state.gen_rid = rid
+        prompt = req.prompt if req.prompt is not None else src["prompt"]
+        negative = req.negative if req.negative is not None else (src["negative"] or "")
+        steps = req.steps if req.steps is not None else 20
+        _GEN_ACTIVE[rid] = {
+            "started_at": time.monotonic(),
+            "wall_started_at": time.time(),
+            "prompt": prompt,
+            "negative": negative,
+            "size": f"{src['width'] * req.scale}x{src['height'] * req.scale}",
+            "steps": steps,
+            "guidance": 1.0,
+            "seed": None,
+            "format": src["output_format"],
+            "n": 1,
+            "phase": "queued",
+            "progress": 0.0,
+            "result_image_ids": [],
+            "error": None,
+            "finished": False,
+            "finished_at": None,
+        }
+
+    server_url = _get_setting("server_url", BRAIN_URL)
+    src_ext = src_path.suffix.lstrip(".").lower()
+    src_ftype = {"png": "image/png", "jpg": "image/jpeg",
+                 "jpeg": "image/jpeg", "webp": "image/webp"}.get(src_ext, "image/png")
+    upload_files = [(src_path.name, src_path.read_bytes(), src_ftype)]
+
+    payload = {
+        "model": "Qwen/Qwen-Image-2.1",
+        "prompt": prompt,
+        "negative_prompt": negative,
+        "size": f"{src['width'] * req.scale}x{src['height'] * req.scale}",
+        "num_inference_steps": steps,
+        "guidance_scale": 1.0,  # upscale uses CFG=1 — guided diffusion
+        "true_cfg_scale": 1.0,  #   re-introduces artifacts at this stage
+        "enable_teacache": True,
+        "n": 1,
+        "output_format": src["output_format"],
+        "enable_upscaling": True,
+        "upscaling_scale": req.scale,
+    }
+    if not negative:
+        payload.pop("negative_prompt")
+
+    async def event_stream():
+        yield _sse({
+            "phase": "connecting",
+            "msg": f"Upscaling {req.scale}x via {server_url}…",
+        })
+        t0 = time.time()
+        queue: asyncio.Queue[str | None] = asyncio.Queue()
+
+        async def pump_ticks(stop: asyncio.Event):
+            while not stop.is_set():
+                elapsed = time.time() - t0
+                if elapsed < 4.0:
+                    pct = (elapsed / 4.0) * 0.7
+                elif elapsed < 12.0:
+                    pct = 0.7 + (elapsed - 4.0) / 8.0 * 0.20
+                else:
+                    pct = 0.9 + min(0.05, (elapsed - 12.0) / 60.0)
+                pct = round(min(0.95, pct), 3)
+                await queue.put(_sse({
+                    "progress": pct, "elapsed": round(elapsed, 1),
+                    "phase": "upscaling",
+                }))
+                try:
+                    await asyncio.wait_for(stop.wait(), timeout=0.25)
+                except asyncio.TimeoutError:
+                    pass
+
+        stop = asyncio.Event()
+        tick_task = asyncio.create_task(pump_ticks(stop))
+
+        brain_task = asyncio.create_task(
+            _run_brain_and_persist(
+                rid=rid,
+                # req is unused inside _run_brain_and_persist for
+                # fields beyond prompt/negative/steps/seed/format —
+                # which we already folded into the payload. Pass a
+                # minimal shim that exposes those attrs.
+                req=type("_Req", (), {
+                    "prompt": prompt,
+                    "negative": negative,
+                    "size": payload["size"],
+                    "steps": steps,
+                    "guidance": 1.0,
+                    "seed": -1,
+                    "output_format": src["output_format"],
+                    "true_cfg_scale": 1.0,
+                    "enable_teacache": True,
+                    "n": 1,
+                    "reference_image_ids": [req.history_id],
+                })(),
+                payload=payload,
+                server_url=server_url,
+                queue=queue,
+                stop=stop,
+                t0=t0,
+                kind="upscale",
+                parent_id=req.history_id,
+                brain_path="/v1/images/edits",
+                upload_files=upload_files,
+            )
+        )
+
+        try:
+            while True:
+                try:
+                    msg = await asyncio.wait_for(queue.get(), timeout=0.5)
+                    if msg:
+                        # Mirror into _GEN_ACTIVE so a remount mid-flight
+                        # picks up the latest phase + progress without
+                        # polling the brain.
+                        _mirror_tick_into_active(rid, msg)
+                        yield msg
+                except asyncio.TimeoutError:
+                    if brain_task.done():
+                        # Drain any final items the brain task queued
+                        # right before completing.
+                        while not queue.empty():
+                            msg = queue.get_nowait()
+                            if msg:
+                                yield msg
+                        if brain_task.exception():
+                            err = f"internal: {brain_task.exception()}"
+                            yield _sse({"error": err})
+                        break
+        finally:
+            stop.set()
+            tick_task.cancel()
+            try:
+                await tick_task
+            except (asyncio.CancelledError, Exception):
+                pass
+            # Cleanup slot
+            async with _GEN_LOCK:
+                _GEN_IN_FLIGHT.pop(rid, None)
+            # Mark active as done (success or failure).
+            if rid in _GEN_ACTIVE:
+                _GEN_ACTIVE[rid]["finished"] = True
+                _GEN_ACTIVE[rid]["finished_at"] = time.time()
+
+
+def _row_filename(row) -> str:
+    """Extract the filename field from a sqlite3 Row, guarding the
+    column-missing case for legacy DBs (same defensive pattern as
+    elsewhere in this file).
+    """
+    try:
+        return row["filename"]
+    except (KeyError, IndexError):
+        return ""
 
 
 # ============================================================ History API
