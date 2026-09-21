@@ -1456,8 +1456,8 @@ dialog.upscale-modal h3 {
 }
 .tile-badge:hover { background: rgba(0,0,0,0.85); }
 .tile-badge svg { width: 12px; height: 12px; }
-.tile-badge.upscale   { border-color: var(--accent);  color: var(--accent); }
-.tile-badge.refs      { border-color: var(--accent-2); color: var(--accent-2); }
+.tile-badge.upscale   { border-color: var(--accent);  color: white; }
+.tile-badge.refs      { border-color: var(--accent-2); color: white; }
 
 
 /* ===== Reference images (generate tab) ===== */
