@@ -225,7 +225,28 @@ app = FastAPI(title="qwen-studio", lifespan=lifespan)
 
 # ============================================================ Static + images
 
-app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
+app.mount("/static", StaticFiles(directory=STATIC_DIR, html=False, check_dir=True), name="static")
+
+
+# Tell browsers NOT to cache the JS/CSS/HTML — we serve from disk, every edit
+# should be live within one hard refresh. (Browsers will still validate with
+# If-None-Match on the next request thanks to the ETag StaticFiles sends.)
+from starlette.middleware.base import BaseHTTPMiddleware
+
+
+class NoCacheStaticMiddleware(BaseHTTPMiddleware):
+    """Add Cache-Control: no-store to /static/* and / so we never serve stale JS."""
+
+    async def dispatch(self, request, call_next):
+        response = await call_next(request)
+        path = request.url.path
+        if path == "/" or path.startswith("/static/"):
+            response.headers["Cache-Control"] = "no-store, must-revalidate"
+            response.headers["Pragma"] = "no-cache"
+        return response
+
+
+app.add_middleware(NoCacheStaticMiddleware)
 
 
 @app.get("/")
