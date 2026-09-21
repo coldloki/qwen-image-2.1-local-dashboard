@@ -100,9 +100,18 @@ def main():
         page.wait_for_selector("#gen-form", state="visible")
         page.fill("#prompt", "a bright red apple on a wooden table, studio lighting")
         page.select_option("#size", "512x512")
-        page.fill("#steps", "4")
-        page.fill("#guidance", "4.0")
-        page.fill("#seed", "7")
+        # Sliders are range inputs; setting .value via JS fires 'input' event so badges update
+        page.evaluate("""() => {
+          for (const [id, v] of [['steps','4'],['guidance','4.0'],['seed','7']]) {
+            const el = document.getElementById(id);
+            el.value = v;
+            el.dispatchEvent(new Event('input', {bubbles: true}));
+            el.dispatchEvent(new Event('change', {bubbles: true}));
+          }
+          // Ensure "random" checkbox is off so seed=7 actually sticks
+          const cb = document.getElementById('seed-random');
+          if (cb.checked) { cb.checked = false; cb.dispatchEvent(new Event('change', {bubbles: true})); }
+        }""")
         page.select_option("#format", "jpeg")
 
         t0 = time.time()
@@ -167,7 +176,6 @@ def main():
         step("settings save defaults")
         page.click('button[data-tab="settings"]')
         page.wait_for_selector("#save-defaults-btn", state="visible")
-        page.fill("#def_steps", "8")
         page.click("#save-defaults-btn")
         page.wait_for_timeout(400)
 

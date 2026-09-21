@@ -47,17 +47,45 @@ export async function render(root) {
             ${fillSelect(['1024x1024','1280x720','720x1280','1536x1024','1024x1536','768x768','512x512'], size)}
           </select>
         </div>
-        <div>
-          <label for="steps">Steps</label>
-          <input type="number" id="steps" min="1" max="100" value="${steps}">
+        <div class="slider-wrap">
+          <div class="slider-label-row">
+            <label for="steps">
+              Steps
+              <span class="hint" title="Denoising iterations. 1 (fast, rough) → 100 (slow, detailed). 28 is a good default.">?</span>
+            </label>
+            <span class="slider-value" id="steps-val">${steps}</span>
+          </div>
+          <input type="range" id="steps" min="1" max="100" step="1" value="${steps}">
+          <div class="slider-ticks">
+            <span>1</span><span>25</span><span>50</span><span>75</span><span>100</span>
+          </div>
         </div>
-        <div>
-          <label for="guidance">Guidance</label>
-          <input type="number" id="guidance" min="0" max="20" step="0.1" value="${guidance}">
+        <div class="slider-wrap">
+          <div class="slider-label-row">
+            <label for="guidance">
+              Guidance
+              <span class="hint" title="Classifier-free guidance scale. 0 (let model decide) → 20 (strict prompt adherence). 4 is balanced.">?</span>
+            </label>
+            <span class="slider-value" id="guidance-val">${guidance.toFixed(1)}</span>
+          </div>
+          <input type="range" id="guidance" min="0" max="20" step="0.1" value="${guidance}">
+          <div class="slider-ticks">
+            <span>0</span><span>5</span><span>10</span><span>15</span><span>20</span>
+          </div>
         </div>
-        <div>
-          <label for="seed">Seed (-1 = random)</label>
-          <input type="number" id="seed" value="${seed}">
+        <div class="slider-wrap">
+          <div class="slider-label-row">
+            <label for="seed">
+              Seed
+              <span class="hint" title="Random seed for reproducibility. -1 (or empty) = a new random seed each generation.">?</span>
+            </label>
+            <span class="slider-value" id="seed-val">${seed < 0 ? 'random' : seed}</span>
+          </div>
+          <input type="range" id="seed" min="-1" max="999999999" step="1" value="${seed}">
+          <label class="seed-random-toggle">
+            <input type="checkbox" id="seed-random" ${seed < 0 ? 'checked' : ''}>
+            Random each time
+          </label>
         </div>
         <div>
           <label for="format">Format</label>
@@ -83,6 +111,29 @@ export async function render(root) {
     document.getElementById('preset-row').style.display = '';
   }
 
+  // Live-update slider value badges + sync seed-random checkbox
+  function paintBadge(id, val) {
+    const el = document.getElementById(id);
+    if (el) el.textContent = val;
+  }
+  const stepsEl = document.getElementById('steps');
+  const guidanceEl = document.getElementById('guidance');
+  const seedEl = document.getElementById('seed');
+  const seedRandom = document.getElementById('seed-random');
+  stepsEl.addEventListener('input', () => paintBadge('steps-val', stepsEl.value));
+  guidanceEl.addEventListener('input', () =>
+    paintBadge('guidance-val', parseFloat(guidanceEl.value).toFixed(1))
+  );
+  function paintSeed() {
+    const v = parseInt(seedEl.value, 10);
+    paintBadge('seed-val', seedRandom.checked || v < 0 ? 'random' : v);
+  }
+  seedEl.addEventListener('input', paintSeed);
+  seedRandom.addEventListener('change', () => {
+    if (seedRandom.checked) seedEl.value = -1;
+    paintSeed();
+  });
+
   // Preset select wiring
   const presetSelect = document.getElementById('preset-select');
   if (presetSelect) {
@@ -92,8 +143,16 @@ export async function render(root) {
       const p = presets.find(x => x.name === name);
       if (p) {
         document.getElementById('prompt').value = p.prompt;
-        if (p.steps != null) document.getElementById('steps').value = p.steps;
-        if (p.seed != null) document.getElementById('seed').value = p.seed;
+        if (p.steps != null) {
+          document.getElementById('steps').value = p.steps;
+          document.getElementById('steps-val').textContent = p.steps;
+        }
+        if (p.seed != null) {
+          document.getElementById('seed').value = p.seed;
+          const random = p.seed < 0;
+          document.getElementById('seed-random').checked = random;
+          document.getElementById('seed-val').textContent = random ? 'random' : p.seed;
+        }
         toast(`Loaded preset "${name}"`, 'success');
       }
     });

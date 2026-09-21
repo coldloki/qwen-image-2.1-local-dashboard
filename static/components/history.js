@@ -161,16 +161,23 @@ document.addEventListener('reroll:from-history', async (e) => {
     const detail = e.detail;
     if (!detail) return;
     const p = document.getElementById('prompt');
-    if (p) {
-      p.value = detail.prompt || '';
-      document.getElementById('steps').value = detail.steps || 28;
-      document.getElementById('seed').value = -1;  // always re-randomize
-      document.getElementById('size').value =
-        `${detail.width}x${detail.height}`;
-      document.getElementById('format').value = detail.output_format || 'png';
-      document.getElementById('guidance').value = detail.guidance || 4.0;
-      toast('Loaded into Generate. Press Generate to re-roll.', 'success');
+    if (!p) return;
+    p.value = detail.prompt || '';
+    if (detail.steps != null) {
+      document.getElementById('steps').value = detail.steps;
+      document.getElementById('steps-val').textContent = detail.steps;
     }
+    // Re-randomize seed
+    document.getElementById('seed').value = -1;
+    document.getElementById('seed-random').checked = true;
+    document.getElementById('seed-val').textContent = 'random';
+    document.getElementById('size').value =
+      `${detail.width}x${detail.height}`;
+    document.getElementById('format').value = detail.output_format || 'png';
+    document.getElementById('guidance').value = detail.guidance || 4.0;
+    document.getElementById('guidance-val').textContent =
+      parseFloat(detail.guidance || 4.0).toFixed(1);
+    toast('Loaded into Generate. Press Generate to re-roll.', 'success');
   }, 100);
 });
 

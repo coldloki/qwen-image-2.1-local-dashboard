@@ -197,6 +197,133 @@ button.danger:hover { background: var(--danger); color: white; }
 }
 .row > * { flex: 1 1 0; min-width: 120px; }
 
+/* ========== Slider controls ========== */
+
+.slider-wrap {
+  display: flex;
+  flex-direction: column;
+  min-width: 160px;
+}
+.slider-label-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+}
+.slider-label-row label {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  margin-bottom: 0.35rem;
+}
+.slider-label-row .slider-value {
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+  color: var(--accent);
+  background: var(--bg-3);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 0.05rem 0.45rem;
+  font-size: 0.8rem;
+  min-width: 3ch;
+  text-align: center;
+}
+
+/* Hint badge — a small circular ? button that explains the field */
+.hint {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: var(--bg-3);
+  border: 1px solid var(--border);
+  color: var(--muted);
+  font-size: 0.7rem;
+  font-weight: 700;
+  cursor: help;
+  user-select: none;
+  transition: color 120ms, border-color 120ms, background 120ms;
+}
+.hint:hover {
+  color: var(--accent);
+  border-color: var(--accent);
+  background: var(--bg-2);
+}
+
+/* Range input — themed to match the rest of the UI */
+input[type=range] {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 100%;
+  background: transparent;
+  cursor: pointer;
+  margin: 0.3rem 0 0.1rem;
+}
+input[type=range]:focus { outline: none; }
+
+input[type=range]::-webkit-slider-runnable-track {
+  height: 6px;
+  border-radius: 3px;
+  background: var(--bg-3);
+  border: 1px solid var(--border);
+}
+input[type=range]::-moz-range-track {
+  height: 6px;
+  border-radius: 3px;
+  background: var(--bg-3);
+  border: 1px solid var(--border);
+}
+input[type=range]::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  height: 16px;
+  width: 16px;
+  border-radius: 50%;
+  background: linear-gradient(135deg, var(--accent), var(--accent-2));
+  border: 2px solid var(--bg);
+  margin-top: -6px;
+  transition: transform 80ms, box-shadow 120ms;
+}
+input[type=range]::-moz-range-thumb {
+  height: 16px;
+  width: 16px;
+  border-radius: 50%;
+  background: var(--accent);
+  border: 2px solid var(--bg);
+  transition: transform 80ms;
+}
+input[type=range]:hover::-webkit-slider-thumb {
+  transform: scale(1.18);
+  box-shadow: 0 0 0 4px rgba(99,102,241,0.18);
+}
+input[type=range]:hover::-moz-range-thumb { transform: scale(1.18); }
+input[type=range]:focus::-webkit-slider-thumb {
+  box-shadow: 0 0 0 4px rgba(99,102,241,0.25);
+}
+input[type=range]:disabled { opacity: 0.4; cursor: not-allowed; }
+
+.slider-ticks {
+  display: flex;
+  justify-content: space-between;
+  padding: 0 0.15rem;
+  margin-top: 0.05rem;
+  font-size: 0.7rem;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.seed-random-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  font-size: 0.78rem;
+  color: var(--muted);
+  margin: 0.3rem 0 0;
+  cursor: pointer;
+}
+.seed-random-toggle input { accent-color: var(--accent); }
+
 /* ========== Generate tab ========== */
 
 .gen-form {

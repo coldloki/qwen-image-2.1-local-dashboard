@@ -29,17 +29,38 @@ export async function render(root) {
             ${fillSelect(['1024x1024','1280x720','720x1280','1536x1024','1024x1536','768x768','512x512'], settings.default_size || '1024x1024')}
           </select>
         </div>
-        <div>
-          <label>Default steps</label>
-          <input type="number" id="def_steps" min="1" max="100" value="${settings.default_steps || '28'}">
+        <div class="slider-wrap">
+          <div class="slider-label-row">
+            <label>
+              Default steps
+              <span class="hint" title="How many denoising passes the model takes. More steps = higher quality and slower. 28 is a good balance; 4–8 for fast previews; 50 for max fidelity.">?</span>
+            </label>
+            <span class="slider-value" id="def_steps-val">${settings.default_steps ?? 28}</span>
+          </div>
+          <input type="range" id="def_steps" min="1" max="50" step="1" value="${settings.default_steps ?? 28}">
+          <div class="slider-ticks"><span>1</span><span>25</span><span>50</span></div>
         </div>
-        <div>
-          <label>Default guidance</label>
-          <input type="number" id="def_guidance" min="0" max="20" step="0.1" value="${settings.default_guidance || '4.0'}">
+        <div class="slider-wrap">
+          <div class="slider-label-row">
+            <label>
+              Default guidance
+              <span class="hint" title="How strictly the model follows your prompt. Lower = more creative, higher = more literal. Try 3–5. Qwen-Image defaults to 4.0.">?</span>
+            </label>
+            <span class="slider-value" id="def_guidance-val">${parseFloat(settings.default_guidance || 4.0).toFixed(1)}</span>
+          </div>
+          <input type="range" id="def_guidance" min="0" max="20" step="0.1" value="${settings.default_guidance ?? 4.0}">
+          <div class="slider-ticks"><span>0</span><span>10</span><span>20</span></div>
         </div>
-        <div>
-          <label>Default seed</label>
-          <input type="number" id="def_seed" value="${settings.default_seed || '-1'}">
+        <div class="slider-wrap">
+          <div class="slider-label-row">
+            <label>
+              Default seed
+              <span class="hint" title="The random seed for reproducibility. Set -1 (or tick 'Random') for a fresh seed every generation.">?</span>
+            </label>
+            <span class="slider-value" id="def_seed-val">${(settings.default_seed ?? -1) < 0 ? 'random' : (settings.default_seed ?? -1)}</span>
+          </div>
+          <input type="range" id="def_seed" min="-1" max="9999" step="1" value="${settings.default_seed ?? -1}">
+          <div class="slider-ticks"><span>-1</span><span>5000</span><span>9999</span></div>
         </div>
         <div>
           <label>Default format</label>
@@ -102,12 +123,28 @@ function paintPresets() {
 }
 
 function bindToolbar() {
+  // Live-update slider value badges in Settings → Defaults
+  const defSteps = document.getElementById('def_steps');
+  const defGuidance = document.getElementById('def_guidance');
+  const defSeed = document.getElementById('def_seed');
+  defSteps.addEventListener('input', () => {
+    document.getElementById('def_steps-val').textContent = defSteps.value;
+  });
+  defGuidance.addEventListener('input', () => {
+    document.getElementById('def_guidance-val').textContent =
+      parseFloat(defGuidance.value).toFixed(1);
+  });
+  defSeed.addEventListener('input', () => {
+    const v = parseInt(defSeed.value, 10);
+    document.getElementById('def_seed-val').textContent = v < 0 ? 'random' : v;
+  });
+
   document.getElementById('save-defaults-btn').addEventListener('click', async () => {
     const body = {
       default_size: document.getElementById('def_size').value,
-      default_steps: parseInt(document.getElementById('def_steps').value, 10),
-      default_guidance: parseFloat(document.getElementById('def_guidance').value),
-      default_seed: parseInt(document.getElementById('def_seed').value, 10),
+      default_steps: parseInt(defSteps.value, 10),
+      default_guidance: parseFloat(defGuidance.value),
+      default_seed: parseInt(defSeed.value, 10),
       default_format: document.getElementById('def_format').value,
     };
     await api.put('/api/settings', body);
