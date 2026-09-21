@@ -231,6 +231,26 @@ def _save_original(raw: bytes, ext: str) -> tuple[str, Path]:
     return image_id, path
 
 
+def _has_real_alpha(img: Image.Image) -> bool:
+    """Detect images with actual transparency.
+
+    Qwen-Image 2.1 writes outputs as RGBA PNG even when every pixel is fully
+    opaque — the alpha channel exists but min is 255. Checking mode alone
+    would tag every generation as transparent, which is wrong.
+
+    Threshold: alpha min < 250 means at least one pixel has meaningful
+    transparency. This ignores JPEG-style anti-alias halos (which would
+    sit at 254/255) but catches real cutouts (which sit at 0).
+    """
+    if img.mode == "RGBA":
+        return img.split()[-1].getextrema()[0] < 250
+    if img.mode == "LA":
+        return img.split()[-1].getextrema()[0] < 250
+    if img.mode == "P":
+        return "transparency" in img.info and img.info["transparency"] is not None
+    return False
+
+
 def _make_thumb(src_path: Path, dest_path: Path) -> None:
     """Thumbnail to WebP at THUMB_MAX_SIDE.
 
@@ -242,9 +262,7 @@ def _make_thumb(src_path: Path, dest_path: Path) -> None:
     with Image.open(src_path) as img:
         img.load()
         img.thumbnail((THUMB_MAX_SIDE, THUMB_MAX_SIDE), Image.LANCZOS)
-        has_alpha = img.mode in ("RGBA", "LA") or (
-            img.mode == "P" and "transparency" in img.info
-        )
+        has_alpha = _has_real_alpha(img)
         if has_alpha and img.mode != "RGBA":
             img = img.convert("RGBA")
         if has_alpha:
@@ -593,9 +611,7 @@ async def generate(req: GenerateRequest, request: Request):
                 # Decode dimensions and detect alpha
                 with Image.open(io.BytesIO(raw)) as im:
                     w, h = im.size
-                    has_alpha = im.mode in ("RGBA", "LA") or (
-                        im.mode == "P" and "transparency" in im.info
-                    )
+                    has_alpha = _has_real_alpha(im)
                 ext = _ext_for(req.output_format)
                 image_id, path = _save_original(raw, ext)
                 thumb_path = THUMBS_DIR / f"{image_id}.webp"
