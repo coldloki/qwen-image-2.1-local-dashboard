@@ -920,32 +920,28 @@ button.iconbtn:disabled { opacity: 0.5; cursor: not-allowed; }
   font-size: 0.85rem;
 }
 
+/* JS-driven masonry. The container becomes a positioning context;
+   each .tile is absolutely positioned by the layout pass in
+   history.js (shortest-column greedy algorithm). Tiles carry
+   `aspect-ratio` from the DB dimensions so heights are reserved
+   before the image actually loads.
+
+   Left-to-right ordering: items fill the shortest column, so a
+   freshly-generated image appears at the END of the top row when
+   "newest first" is selected — items 1..N across the row. */
 .masonry {
-  /* True CSS columns masonry — each column grows independently based
-     on its tiles' intrinsic heights. No row-alignment gaps. The trade-
-     off: items flow top-to-bottom WITHIN each column (not strictly
-     left-to-right across the grid), which is invisible for a
-     "newest first" feed. */
-  column-count: 4;
-  column-gap: var(--space-3);
-}
-@media (max-width: 1100px) {
-  .masonry { column-count: 3; }
-}
-@media (max-width: 800px) {
-  .masonry { column-count: 2; }
-}
-@media (max-width: 700px) {
-  .masonry { column-count: 2; column-gap: var(--space-3); }
-}
-/* Inside a column, each tile must not split across columns. */
-.masonry > .tile {
-  display: inline-block;       /* required for column-wrap */
+  position: relative;
   width: 100%;
-  margin: 0 0 var(--space-3);  /* bottom gap between tiles in a column */
-  break-inside: avoid;         /* prevent splitting across columns */
-  page-break-inside: avoid;    /* legacy fallback */
-  -webkit-column-break-inside: avoid;
+}
+.masonry > .tile {
+  position: absolute;
+  /* width is set per-column by JS (column-count · column-width) */
+  /* top + left set by JS layout pass */
+}
+.masonry > .tile img {
+  display: block;
+  width: 100%;
+  height: auto;
 }
 
 /* ========== Responsive header ==========

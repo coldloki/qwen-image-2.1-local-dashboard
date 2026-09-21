@@ -181,14 +181,79 @@ function paint() {
     });
   });
   refreshBulkBar();
+  // Synchronous layout so the very first paint after paint() shows
+  // the tiles in their final positions — no (0,0) stack flash.
+  const masonry = host.querySelector('.masonry');
+  if (masonry) doLayout(masonry);
 }
+
+/* JS masonry layout — left-to-right ordering.
+   Picks column count based on viewport width, then greedily
+   places each tile in the column with the smallest current
+   height. Re-runs on resize (debounced). Heights come from
+   the tile's aspect-ratio CSS (set from DB dimensions in
+   tileHtml()), so this works before images load. */
+let _masonryRaf = null;
+function layoutMasonry(host) {
+  if (!host) return;
+  const masonry = host.querySelector('.masonry');
+  if (!masonry) return;
+  if (_masonryRaf) cancelAnimationFrame(_masonryRaf);
+  _masonryRaf = requestAnimationFrame(() => doLayout(masonry));
+}
+
+function doLayout(masonry) {
+  const tiles = Array.from(masonry.children);
+  if (!tiles.length) return;
+  const w = masonry.clientWidth;
+  if (!w) return;
+  // Column count: 4 desktop, 3 mid, 2 narrow.
+  let cols = 4;
+  if (w < 1100) cols = 3;
+  if (w < 800) cols = 2;
+  const gap = 13.6; // --space-3 in px (matches toolbar)
+  const colWidth = (w - gap * (cols - 1)) / cols;
+  // Set all widths first (so aspect-ratio can resolve to height).
+  for (const tile of tiles) {
+    tile.style.width = colWidth + 'px';
+  }
+  // Force a synchronous reflow so offsetHeight reflects the new width.
+  void masonry.offsetHeight;
+  const colHeights = new Array(cols).fill(0);
+  for (const tile of tiles) {
+    // Pick shortest column.
+    let idx = 0;
+    for (let i = 1; i < cols; i++) {
+      if (colHeights[i] < colHeights[idx]) idx = i;
+    }
+    tile.style.left = (idx * (colWidth + gap)) + 'px';
+    tile.style.top = colHeights[idx] + 'px';
+    const h = tile.offsetHeight || colWidth; // fallback if aspect is 0
+    colHeights[idx] += h + gap;
+  }
+  masonry.style.height = Math.max(...colHeights) + 'px';
+  _masonryRaf = null;
+}
+
+// Re-layout on resize (debounced).
+let _resizeTimer = null;
+window.addEventListener('resize', () => {
+  if (_resizeTimer) clearTimeout(_resizeTimer);
+  _resizeTimer = setTimeout(() => {
+    const host = document.getElementById('gallery-host');
+    if (host) layoutMasonry(host);
+  }, 120);
+});
 
 function tileHtml(it, i) {
   const alpha = it.has_alpha ? ' tile--alpha' : '';
   const checked = ui.selected.has(it.id) ? ' tile--checked' : '';
   const selectable = ui.selectMode ? ' tile--selectable' : '';
+  // aspect-ratio from DB dimensions lets the JS layout pass compute
+  // heights immediately, before the thumbnail bytes load.
+  const ratio = (it.width && it.height) ? `${it.width} / ${it.height}` : '1 / 1';
   return `
-    <div class="tile${alpha}${checked}${selectable}" data-i="${i}" data-id="${it.id}">
+    <div class="tile${alpha}${checked}${selectable}" data-i="${i}" data-id="${it.id}" style="aspect-ratio:${ratio}">
       <img src="${it.thumb_url}" alt="" loading="lazy">
       <span class="tile-check">${icon('check', { size: 14 })}</span>
     </div>
