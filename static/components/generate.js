@@ -292,7 +292,12 @@ export async function render(root) {
       }
     } catch (e) {
       paintStatus('error');
-      toast(e.message || String(e), 'error');
+      if (e.status === 409 && e.payload?.error === 'busy') {
+        const wait = e.retryAfter || e.payload?.retry_after || 30;
+        toast(`Generation busy on another device — try again in ~${wait}s`, 'error', { duration: 4000 });
+      } else {
+        toast(e.message || String(e), 'error');
+      }
     } finally {
       currentRequest = null;
       btn.classList.remove('cancel');

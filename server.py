@@ -82,6 +82,17 @@ def _detect_build_sha() -> str:
 BUILD_SHA = _detect_build_sha()
 THUMB_QUALITY = int(os.environ.get("THUMB_QUALITY", "78"))
 
+# ------------------------------------------------------------ Concurrency cap
+# The brain (SGLang Diffusion) can technically queue multiple requests on the
+# GPU side, but at 1024x1024 + 50 steps two concurrent jobs can push the
+# RTX 3090 over its 24GB VRAM ceiling and OOM the whole container. We enforce
+# 1 in-flight generation server-side so two clients (or one client + a stuck
+# stream) cannot blow up the brain. Subsequent calls get HTTP 409 with a
+# Retry-After hint.
+_GEN_LOCK = asyncio.Lock()
+_GEN_IN_FLIGHT: dict[str, float] = {}  # rid -> started_at (monotonic seconds)
+_GEN_MAX = int(os.environ.get("MAX_CONCURRENT_GENERATIONS", "1"))
+
 for d in (DATA_DIR, IMAGES_DIR, THUMBS_DIR):
     d.mkdir(parents=True, exist_ok=True)
 
@@ -414,12 +425,54 @@ async def brain_health() -> dict:
         return {"ok": False, "error": f"{type(e).__name__}: {e}"}
 
 
-@app.post("/api/generate")
-async def generate(req: GenerateRequest) -> StreamingResponse:
+@app.get("/api/generate/status")
+async def generate_status() -> dict:
+    """How many generations are currently in flight. Used by the
+    Generate tab to show a 'busy on another device' banner."""
+    async with _GEN_LOCK:
+        in_flight = len(_GEN_IN_FLIGHT)
+        oldest = min(_GEN_IN_FLIGHT.values()) if _GEN_IN_FLIGHT else None
+    return {
+        "in_flight": in_flight,
+        "max": _GEN_MAX,
+        "oldest_age": (int(time.time() - oldest) if oldest is not None else 0),
+        "busy": _GEN_MAX > 0 and in_flight >= _GEN_MAX,
+    }
+
+
+@app.post("/api/generate", response_model=None)
+async def generate(req: GenerateRequest, request: Request):
     """Proxy to brain, persist result, stream SSE progress.
 
     Event types: {"phase": "..."} | {"progress": 0..1} | {"result": {...}} | {"error": "..."}
     """
+    # ----- Concurrency cap ------------------------------------------------
+    # Fast-path check before we start the SSE stream so a rejected client
+    # gets a clean HTTP 409 instead of an event stream that ends in
+    # {"error": "busy"}.
+    rid = f"{int(time.time() * 1000)}-{uuid.uuid4().hex[:6]}"
+    async with _GEN_LOCK:
+        in_flight = len(_GEN_IN_FLIGHT)
+        if 0 < _GEN_MAX and in_flight >= _GEN_MAX:
+            # Tell the client how long the oldest in-flight job has been
+            # running so the user knows roughly when to retry.
+            oldest_started = min(_GEN_IN_FLIGHT.values()) if _GEN_IN_FLIGHT else time.time()
+            age = max(1, int(time.time() - oldest_started))
+            return JSONResponse(
+                status_code=409,
+                content={
+                    "error": "busy",
+                    "detail": f"A generation is already in flight ({in_flight}/{_GEN_MAX}). Please wait.",
+                    "retry_after": age,
+                    "in_flight": in_flight,
+                    "max": _GEN_MAX,
+                },
+                headers={"Retry-After": str(age)},
+            )
+        # Reserve a slot for this request.
+        _GEN_IN_FLIGHT[rid] = time.time()
+        request.state.gen_rid = rid
+
     server_url = _get_setting("server_url", BRAIN_URL)
     payload = {
         "model": "Qwen/Qwen-Image-2.1",
@@ -575,6 +628,12 @@ async def generate(req: GenerateRequest) -> StreamingResponse:
                 yield _sse({"result": _build_entry(image_id)})
         except httpx.RequestError as e:
             yield _sse({"error": f"brain unreachable: {type(e).__name__}: {e}"})
+        finally:
+            # Release the concurrency slot — must happen on every code
+            # path (success, error, client disconnect) or the slot will
+            # stay reserved forever.
+            async with _GEN_LOCK:
+                _GEN_IN_FLIGHT.pop(request.state.gen_rid, None)
 
     return StreamingResponse(event_stream(), media_type="text/event-stream")
 

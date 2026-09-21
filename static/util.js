@@ -12,12 +12,12 @@ export function fillSelect(options, selected) {
   ).join('');
 }
 
-export function toast(msg, type = '') {
+export function toast(msg, type = '', opts = {}) {
   const host = document.getElementById('toast-container');
   if (!host) return;
   const el = document.createElement('div');
   el.className = `toast ${type}`;
   el.textContent = msg;
   host.appendChild(el);
-  setTimeout(() => el.remove(), 3000);
+  setTimeout(() => el.remove(), opts.duration ?? 3000);
 }

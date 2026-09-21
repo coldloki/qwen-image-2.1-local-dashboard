@@ -32,9 +32,16 @@ export async function* streamGenerate(req) {
     body: JSON.stringify(req),
   });
   if (!r.ok || !r.body) {
-    let msg = `HTTP ${r.status}`;
-    try { msg = (await r.json()).detail || msg; } catch {}
-    throw new Error(msg);
+    let body = null;
+    try { body = await r.json(); } catch {}
+    const detail = body?.detail || `HTTP ${r.status}`;
+    // Attach structured fields so callers can render a friendly message
+    // instead of a raw error string.
+    const err = new Error(detail);
+    err.status = r.status;
+    err.retryAfter = Number(r.headers.get('Retry-After')) || body?.retry_after || null;
+    err.payload = body;
+    throw err;
   }
   const reader = r.body.getReader();
   const dec = new TextDecoder();
