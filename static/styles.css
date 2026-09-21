@@ -594,44 +594,67 @@ input[type="range"] {
   font-feature-settings: "tnum";
 }
 
-/* Banner shown when a generation was running in the background
-   (user navigated away to History tab while one was in flight).
-   Reuses the .progress-area container so spacing is consistent. */
-.running-banner {
-  display: flex;
-  align-items: center;
-  gap: 0.85rem;
-  margin-top: 0.85rem;
-  padding: 0.7rem 0.9rem;
-  background: var(--bg-2);
-  border: 1px solid var(--line);
-  border-left: 3px solid var(--accent-2);
-  border-radius: 8px;
-}
-.running-banner-text {
+/* In-progress card. Shown in the result-area (left column) while
+   the brain is generating — same place the finished image lands,
+   so the spatial story is coherent. */
+.progress-card {
   display: flex;
   flex-direction: column;
-  gap: 0.15rem;
-  min-width: 0;
-  flex: 1 1 auto;
+  align-items: center;
+  gap: 0.85rem;
+  padding: 2rem 1rem;
+  background: var(--bg-3);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  text-align: center;
+  min-height: 180px;
+  justify-content: center;
 }
-.running-banner-text strong {
-  font-size: 0.9rem;
-  font-weight: 600;
+.progress-card-icon {
+  color: var(--accent);
+  display: inline-flex;
 }
-.running-banner-sub {
-  font-size: 0.8rem;
+.progress-card-icon .icon.spin {
+  animation: spin 1.6s linear infinite;
+}
+.progress-card-prompt {
+  font-size: 0.95rem;
+  color: var(--fg);
+  max-width: 90%;
+  line-height: 1.4;
+  word-break: break-word;
+}
+.progress-card-prompt em {
   color: var(--muted);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  font-style: italic;
 }
-.running-banner-elapsed {
+.progress-card .progress-bar.big {
+  width: min(420px, 80%);
+  height: 8px;
+  margin-top: 0.4rem;
+}
+.progress-card .progress-info {
   font-size: 0.85rem;
+  margin-top: 0;
+  color: var(--muted);
+}
+.progress-card--error {
+  border-color: var(--danger, #e74c3c);
+}
+.progress-card--error .progress-card-icon {
+  color: var(--danger, #e74c3c);
+}
+
+/* Small status line below the Generate button. Mirrors the
+   progress-card info text for users who want the right column
+   to confirm the action. */
+.submit-status {
+  margin-top: 0.6rem;
+  min-height: 1.2em;
+  font-size: 0.85rem;
+  color: var(--muted);
   font-feature-settings: "tnum";
-  font-weight: 600;
-  color: var(--accent-2);
-  flex: 0 0 auto;
+  text-align: center;
 }
 
 .submit-btn {
@@ -767,6 +790,10 @@ input[type="range"] {
 @keyframes slide-in {
   from { transform: translateY(20px); opacity: 0; }
   to { transform: translateY(0); opacity: 1; }
+}
+@keyframes spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
 }
 
 /* ========== History tab ========== */

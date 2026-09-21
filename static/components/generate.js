@@ -212,11 +212,7 @@ export async function render(root) {
             ${icon('sparkles', { size: 16 })}
             <span>Generate</span>
           </button>
-
-          <div id="progress-area" hidden>
-            <div class="progress-bar"><div id="progress-fill"></div></div>
-            <div class="progress-info" id="progress-info">Starting…</div>
-          </div>
+          <div id="submit-status" class="submit-status" aria-live="polite"></div>
         </section>
       </div>
     </form>
@@ -316,19 +312,20 @@ export async function render(root) {
     // Clear any leftover running banner from a previous in-flight generation.
     if (_runningPollHandle) { clearInterval(_runningPollHandle); _runningPollHandle = null; }
     _runningBannerEl = null;
-    const progressArea = document.getElementById('progress-area');
-    progressArea.hidden = false;
-    progressArea.innerHTML = `
-      <div class="progress-bar"><div class="progress-fill" id="progress-fill" style="width:0%"></div></div>
-      <div class="progress-info" id="progress-info">Starting…</div>
-    `;
+    // The big progress card lives in the left column where the
+    // finished image will land. Right column gets just a status line.
+    renderProgress(promptVal, performance.now());
     const t0 = performance.now();
+    const submitStatus = document.getElementById('submit-status');
+    if (submitStatus) submitStatus.textContent = 'Starting…';
 
     function paintStatus(phase, msg) {
       const elapsed = (performance.now() - t0) / 1000;
       const phaseText = msg || phase || 'denoising';
-      document.getElementById('progress-info').textContent =
-        `${elapsed.toFixed(1)}s · ${phaseText}`;
+      const info = document.getElementById('progress-info');
+      if (info) info.textContent = `${elapsed.toFixed(1)}s · ${phaseText}`;
+      const status = document.getElementById('submit-status');
+      if (status) status.textContent = `${elapsed.toFixed(1)}s · ${phaseText}`;
     }
 
     try {
@@ -347,6 +344,7 @@ export async function render(root) {
           continue;
         }
         if (evt.error) {
+          renderProgressError(evt.error);
           paintStatus('error');
           toast(evt.error, 'error');
           break;
@@ -359,14 +357,18 @@ export async function render(root) {
       paintStatus('error');
       if (e.status === 409 && e.payload?.error === 'busy') {
         const wait = e.retryAfter || e.payload?.retry_after || 30;
+        renderProgressError(`Busy on another device — try again in ~${wait}s`);
         toast(`Generation busy on another device — try again in ~${wait}s`, 'error', { duration: 4000 });
       } else {
+        renderProgressError(e.message || String(e));
         toast(e.message || String(e), 'error');
       }
     } finally {
       currentRequest = null;
       btn.classList.remove('cancel');
       btn.innerHTML = `${icon('sparkles', { size: 16 })}<span>Generate</span>`;
+      const submitStatus = document.getElementById('submit-status');
+      if (submitStatus) submitStatus.textContent = '';
     }
   });
 
@@ -416,39 +418,44 @@ let _runningPollHandle = null;
 
 function _showRunningBanner(active) {
   if (_runningBannerEl) return; // already shown
-  const area = document.getElementById('progress-area');
+  // Render the same big progress card the submit handler uses,
+  // but seeded with the background generation's elapsed time and
+  // progress. Lives in the left column where the finished image
+  // will land.
+  const ageSeconds = active.age || 0;
+  const progress = typeof active.progress === 'number' ? active.progress : 0;
+  const phase = active.phase || 'running';
+  const area = document.getElementById('result-area');
   if (!area) return;
-  // Reuse the existing progress bar container so styling is consistent.
-  area.hidden = false;
   area.innerHTML = `
-    <div class="running-banner">
-      <div class="running-banner-text">
-        <strong>Generation running in background</strong>
-        <span class="running-banner-sub">${escape(active.prompt.slice(0, 80))}${active.prompt.length > 80 ? '…' : ''}</span>
-      </div>
-      <span class="running-banner-elapsed" id="running-elapsed">${active.age.toFixed(1)}s</span>
+    <div class="progress-card" id="running-progress-card">
+      <div class="progress-card-icon">${icon('arrow-path', { size: 32, cls: 'spin' })}</div>
+      <div class="progress-card-prompt">${escape(active.prompt || '')}</div>
+      <div class="progress-bar big"><div class="progress-fill" id="progress-fill" style="width:${(progress * 100).toFixed(1)}%"></div></div>
+      <div class="progress-info" id="progress-info">${ageSeconds.toFixed(1)}s · ${phase} · in background</div>
     </div>
   `;
-  _runningBannerEl = area;
+  _runningBannerEl = area.firstElementChild;
 
   // Poll /api/generate/active every 1.5s. When it reports finished,
-  // swap the banner for the actual result.
+  // swap the card for the actual result.
   _runningPollHandle = setInterval(async () => {
     try {
       const { active: latest } = await api.get('/api/generate/active');
       if (!latest || !latest.finished) {
-        const el = document.getElementById('running-elapsed');
-        if (el && latest) el.textContent = latest.age.toFixed(1) + 's';
+        if (latest) {
+          const info = document.getElementById('progress-info');
+          const fill = document.getElementById('progress-fill');
+          if (info) info.textContent = `${(latest.age || 0).toFixed(1)}s · ${latest.phase || 'running'} · in background`;
+          if (fill && typeof latest.progress === 'number') {
+            fill.style.width = (Math.max(0, Math.min(1, latest.progress)) * 100).toFixed(1) + '%';
+          }
+        }
         return;
       }
       clearInterval(_runningPollHandle);
       _runningPollHandle = null;
       _runningBannerEl = null;
-      area.hidden = true;
-      area.innerHTML = `
-        <div class="progress-bar"><div class="progress-fill" id="progress-fill" style="width:100%"></div></div>
-        <div class="progress-info" id="progress-info">done</div>
-      `;
       const ids = latest.result_image_ids || [];
       if (ids.length > 0) {
         const entries = (await Promise.all(ids.map(_hydrateEntry))).filter(Boolean);
@@ -457,6 +464,10 @@ function _showRunningBanner(active) {
           renderResults(entries);
           toast(`Generation finished — ${entries.length} image(s)`, 'success', { duration: 2500 });
         }
+      } else if (latest.error) {
+        renderProgressError(latest.error);
+      } else {
+        clearResult();
       }
     } catch (e) {
       console.warn('generate: active poll failed', e);
@@ -551,7 +562,33 @@ function renderResults(results) {
 
 function clearResult() {
   document.getElementById('result-area').innerHTML = `
-    <div class="result-empty">Last generated image will appear here</div>
+    <div class="card-empty">${icon('photo', { size: 28 })}<p>Last generated image will appear here.</p></div>
+  `;
+}
+
+// In-progress card. Replaces the empty placeholder while the brain
+// is generating. Lives in the left column's #result-area — same
+// place the finished image lands — so the spatial story is
+// coherent: "the image is being born right here."
+function renderProgress(prompt, t0) {
+  const area = document.getElementById('result-area');
+  area.innerHTML = `
+    <div class="progress-card" id="progress-card">
+      <div class="progress-card-icon">${icon('arrow-path', { size: 32, cls: 'spin' })}</div>
+      <div class="progress-card-prompt">${escape(prompt) || '<em>empty prompt</em>'}</div>
+      <div class="progress-bar big"><div class="progress-fill" id="progress-fill" style="width:0%"></div></div>
+      <div class="progress-info" id="progress-info">Connecting…</div>
+    </div>
+  `;
+}
+
+function renderProgressError(message) {
+  const area = document.getElementById('result-area');
+  area.innerHTML = `
+    <div class="progress-card progress-card--error">
+      <div class="progress-card-icon">${icon('exclamation-triangle', { size: 32 })}</div>
+      <div class="progress-card-prompt">${escape(message || 'Generation failed')}</div>
+    </div>
   `;
 }
 
