@@ -23,11 +23,17 @@ export async function render(root) {
 
     <div class="settings-section">
       <h3 style="margin-top:0">Defaults</h3>
-      <div class="row">
-        <div>
+      <div class="defaults-grid">
+        <div class="field">
           <label>Default size</label>
           <select id="def_size">
             ${fillSelect(['1024x1024','1280x720','720x1280','1536x1024','1024x1536','768x768','512x512'], settings.default_size || '1024x1024')}
+          </select>
+        </div>
+        <div class="field">
+          <label>Default format</label>
+          <select id="def_format">
+            ${fillSelect(['png','jpeg','webp'], settings.default_format || 'png')}
           </select>
         </div>
         <div class="slider-wrap">
@@ -62,12 +68,6 @@ export async function render(root) {
           </div>
           <input type="range" id="def_seed" min="-1" max="9999" step="1" value="${settings.default_seed ?? -1}">
           <div class="slider-ticks"><span>-1</span><span>5000</span><span>9999</span></div>
-        </div>
-        <div>
-          <label>Default format</label>
-          <select id="def_format">
-            ${fillSelect(['png','jpeg','webp'], settings.default_format || 'png')}
-          </select>
         </div>
       </div>
       <button class="primary" id="save-defaults-btn" style="margin-top:var(--space-4); width:auto; padding:0.7rem 1.4rem">Save defaults</button>

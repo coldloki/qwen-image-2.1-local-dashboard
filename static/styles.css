@@ -137,10 +137,11 @@ header.topbar .primary-nav a:hover {
   color: var(--fg);
   background: var(--bg-3);
 }
+/* Active: subtle accent-tinted background only — no underline.
+   The accent text colour marks it as the current page. */
 header.topbar .primary-nav a.active {
-  color: var(--fg);
-  background: var(--bg-3);
-  box-shadow: inset 0 -2px 0 0 var(--accent);
+  color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
 }
 header.topbar .actions {
   display: flex;
@@ -806,10 +807,15 @@ button.iconbtn:disabled { opacity: 0.5; cursor: not-allowed; }
 
 .masonry {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 12px;
+  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+  gap: var(--space-4);
 }
-@media (max-width: 1100px) { .masonry { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
+@media (max-width: 700px) {
+  .masonry {
+    grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+    gap: var(--space-3);
+  }
+}
 
 /* ========== Responsive header ==========
    On narrow screens the brand and primary nav share one row but
@@ -856,16 +862,7 @@ button.iconbtn:disabled { opacity: 0.5; cursor: not-allowed; }
 }
 
 #gallery-host {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
-  gap: var(--space-4);
   margin-top: var(--space-4);
-}
-@media (max-width: 700px) {
-  #gallery-host {
-    grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
-    gap: var(--space-3);
-  }
 }
 
 /* ========== Transparent-PNG checker pattern ==========
@@ -1088,6 +1085,32 @@ dialog.lightbox .lb-actions .iconbtn.danger:hover {
   border-bottom: 1px solid var(--border);
 }
 .settings-section:last-child { border-bottom: none; }
+
+/* Defaults: 2-column grid where row 1 holds the two short selectors
+   (Size, Format) and rows 2-4 hold the three sliders. On narrow
+   screens everything stacks. */
+.defaults-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: var(--space-4);
+}
+.defaults-grid .field {
+  display: flex;
+  flex-direction: column;
+}
+.defaults-grid .slider-wrap {
+  grid-column: 1 / -1;
+  padding: var(--space-3) var(--space-4);
+  background: var(--bg-2);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+}
+@media (max-width: 700px) {
+  .defaults-grid {
+    grid-template-columns: 1fr;
+    gap: var(--space-3);
+  }
+}
 
 .preset-row {
   display: flex;
