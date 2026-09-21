@@ -144,6 +144,9 @@ DEFAULT_SETTINGS = {
     "default_guidance": "4.0",
     "default_seed": "-1",
     "default_format": "png",
+    # Advanced — same defaults that GenerateRequest uses
+    "default_true_cfg": "1.0",
+    "default_teacache": "1",
 }
 
 
@@ -199,6 +202,10 @@ class GenerateRequest(BaseModel):
     guidance: float = Field(4.0, ge=0.0, le=20.0)
     seed: int = -1
     output_format: str = "png"
+    # Advanced — see collapsible "Advanced" section on Generate page.
+    # Defaults chosen so existing API clients keep working unchanged.
+    true_cfg_scale: float = Field(1.0, ge=0.0, le=20.0)
+    enable_teacache: bool = True
 
 
 class PresetIn(BaseModel):
@@ -215,6 +222,8 @@ class SettingsIn(BaseModel):
     default_guidance: float | None = None
     default_seed: int | None = None
     default_format: str | None = None
+    default_true_cfg: float | None = None
+    default_teacache: bool | None = None
 
 
 # ============================================================ Image helpers
@@ -499,6 +508,8 @@ async def generate(req: GenerateRequest, request: Request):
         "size": req.size,
         "num_inference_steps": req.steps,
         "guidance_scale": req.guidance,
+        "true_cfg_scale": req.true_cfg_scale,
+        "enable_teacache": req.enable_teacache,
         "num_images": 1,
         "seed": None if req.seed < 0 else req.seed,
         "output_format": req.output_format,

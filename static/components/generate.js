@@ -31,6 +31,11 @@ export async function render(root) {
   const guidance = parseFloat(settings.default_guidance || '4.0');
   const seed = parseInt(settings.default_seed || '-1', 10);
   const format = settings.default_format || 'png';
+  // Advanced defaults — wired below as collapsible section.
+  const trueCfg = parseFloat(settings.default_true_cfg ?? '1.0');
+  const teacache = settings.default_teacache === undefined
+    ? true
+    : !!settings.default_teacache;
 
   const rerollPrompt = reroll?.prompt ?? '';
   const rerollNeg = reroll?.negative ?? '';
@@ -43,6 +48,8 @@ export async function render(root) {
   const initGuidance = reroll?.guidance ?? guidance;
   const initSeed = reroll?.seed ?? seed;
   const initFormat = reroll?.output_format || format;
+  const initTrueCfg = reroll?.true_cfg_scale ?? trueCfg;
+  const initTeacache = reroll?.enable_teacache ?? teacache;
 
   root.innerHTML = `
     <form class="gen-form" id="gen-form">
@@ -162,6 +169,33 @@ export async function render(root) {
             </label>
           </div>
 
+          <details class="advanced" id="advanced-details">
+            <summary>
+              <span class="advanced-label">Advanced</span>
+              <span class="advanced-hint" id="advanced-hint">true_cfg · teacache</span>
+            </summary>
+
+            <div class="slider-wrap advanced-slider">
+              <div class="slider-label-row">
+                <label for="true-cfg">
+                  True CFG
+                  <span class="hint" title="Second CFG layer that Qwen-Image applies after the first. 1.0 = neutral; 4–6 = stronger prompt adherence; >8 can oversaturate.">?</span>
+                </label>
+                <span class="slider-value" id="true-cfg-val">${initTrueCfg.toFixed(1)}</span>
+              </div>
+              <input type="range" id="true-cfg" min="0" max="10" step="0.1" value="${initTrueCfg}">
+              <div class="slider-ticks"><span>0</span><span>2.5</span><span>5</span><span>7.5</span><span>10</span></div>
+            </div>
+
+            <label class="seed-random-toggle">
+              <input type="checkbox" id="teacache" ${initTeacache ? 'checked' : ''}>
+              <span>
+                TeaCache
+                <span class="advanced-hint" style="margin-left:0.4rem">cache timesteps with low delta — usually faster</span>
+              </span>
+            </label>
+          </details>
+
           <button type="submit" class="primary submit-btn" id="submit-btn">
             ${icon('sparkles', { size: 16 })}
             <span>Generate</span>
@@ -185,10 +219,29 @@ export async function render(root) {
   const guidanceEl = document.getElementById('guidance');
   const seedEl = document.getElementById('seed');
   const seedRandom = document.getElementById('seed-random');
+  const trueCfgEl = document.getElementById('true-cfg');
+  const teacacheEl = document.getElementById('teacache');
   stepsEl.addEventListener('input', () => paintBadge('steps-val', stepsEl.value));
   guidanceEl.addEventListener('input', () =>
     paintBadge('guidance-val', parseFloat(guidanceEl.value).toFixed(1))
   );
+  if (trueCfgEl) {
+    trueCfgEl.addEventListener('input', () =>
+      paintBadge('true-cfg-val', parseFloat(trueCfgEl.value).toFixed(1))
+    );
+  }
+  // Flip the Advanced hint depending on open/closed state.
+  const advDetails = document.getElementById('advanced-details');
+  const advHint = document.getElementById('advanced-hint');
+  if (advDetails && advHint) {
+    const syncHint = () => {
+      advHint.textContent = advDetails.open
+        ? 'tune qwen-specific options'
+        : 'true_cfg · teacache';
+    };
+    advDetails.addEventListener('toggle', syncHint);
+    syncHint();
+  }
   const paintSeed = () => {
     const v = parseInt(seedEl.value, 10);
     paintBadge('seed-val', seedRandom.checked || v < 0 ? 'random' : v);
@@ -245,6 +298,8 @@ export async function render(root) {
       guidance: parseFloat(document.getElementById('guidance').value),
       seed: parseInt(document.getElementById('seed').value, 10),
       output_format: document.getElementById('format').value,
+      true_cfg_scale: parseFloat(document.getElementById('true-cfg').value),
+      enable_teacache: document.getElementById('teacache').checked,
     };
 
     sessionStorage.setItem('gen:last', JSON.stringify({

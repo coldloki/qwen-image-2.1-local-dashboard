@@ -479,6 +479,11 @@ input[type=range]:disabled { opacity: 0.4; cursor: not-allowed; }
 .advanced-label { font-size: 0.9rem; color: var(--fg); font-weight: 500; }
 .advanced-hint { color: var(--muted); font-size: 0.8rem; }
 .advanced > textarea { margin-top: 0.5rem; }
+/* When advanced contains controls rather than a textarea, give them a
+ * soft inset so they read as "secondary" but still tappable. */
+.advanced > .slider-wrap { margin-top: 0.4rem; }
+.advanced > .slider-wrap .slider-label-row label { color: var(--fg); }
+.advanced > label.seed-random-toggle { display: flex; gap: 0.5rem; align-items: center; padding: 0.4rem 0; }
 
 /* Form fields (Size, Format, etc.) — generous padding inside. */
 .field {

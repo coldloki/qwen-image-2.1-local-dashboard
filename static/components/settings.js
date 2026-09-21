@@ -69,6 +69,21 @@ export async function render(root) {
           <input type="range" id="def_seed" min="-1" max="9999" step="1" value="${settings.default_seed ?? -1}">
           <div class="slider-ticks"><span>-1</span><span>5000</span><span>9999</span></div>
         </div>
+        <div class="slider-wrap">
+          <div class="slider-label-row">
+            <label>
+              Default True CFG
+              <span class="hint" title="Second CFG applied after the first in Qwen-Image. 1.0 = neutral. 4–6 = stronger prompt adherence. Lower this if colors saturate.">?</span>
+            </label>
+            <span class="slider-value" id="def_true_cfg-val">${parseFloat(settings.default_true_cfg || 1.0).toFixed(1)}</span>
+          </div>
+          <input type="range" id="def_true_cfg" min="0" max="10" step="0.1" value="${settings.default_true_cfg ?? 1.0}">
+          <div class="slider-ticks"><span>0</span><span>5</span><span>10</span></div>
+        </div>
+        <label class="seed-random-toggle">
+          <input type="checkbox" id="def_teacache" ${settings.default_teacache === '1' || settings.default_teacache === true ? 'checked' : ''}>
+          Default TeaCache (faster)
+        </label>
       </div>
       <button class="primary" id="save-defaults-btn" style="margin-top:var(--space-4); width:auto; padding:0.7rem 1.4rem">Save defaults</button>
     </div>
@@ -166,6 +181,13 @@ function bindToolbar() {
     const v = parseInt(defSeed.value, 10);
     document.getElementById('def_seed-val').textContent = v < 0 ? 'random' : v;
   });
+  const defTrueCfg = document.getElementById('def_true_cfg');
+  if (defTrueCfg) {
+    defTrueCfg.addEventListener('input', () => {
+      document.getElementById('def_true_cfg-val').textContent =
+        parseFloat(defTrueCfg.value).toFixed(1);
+    });
+  }
 
   document.getElementById('save-defaults-btn').addEventListener('click', async () => {
     const body = {
@@ -174,6 +196,8 @@ function bindToolbar() {
       default_guidance: parseFloat(defGuidance.value),
       default_seed: parseInt(defSeed.value, 10),
       default_format: document.getElementById('def_format').value,
+      default_true_cfg: parseFloat(document.getElementById('def_true_cfg').value),
+      default_teacache: document.getElementById('def_teacache').checked,
     };
     await api.put('/api/settings', body);
     toast('Defaults saved', 'success');
