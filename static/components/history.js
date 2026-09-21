@@ -66,8 +66,12 @@ function paint() {
 }
 
 function tileHtml(it, i) {
+  // has_alpha: add a checker background so transparent PNGs read at
+  // a glance in the gallery grid. The class is also propagated to the
+  // lightbox image for consistency when the user opens it.
+  const alpha = it.has_alpha ? ' tile--alpha' : '';
   return `
-    <div class="tile" data-i="${i}" data-id="${it.id}">
+    <div class="tile${alpha}" data-i="${i}" data-id="${it.id}" data-alpha="${alpha ? '1' : '0'}">
       <img src="${it.thumb_url}" alt="" loading="lazy">
     </div>
   `;
@@ -129,6 +133,14 @@ function openLightbox(i) {
   const it = items[i];
   imgEl.src = it.image_url;
   imgEl.alt = it.prompt;
+  // Apply checker background to lightbox image too if alpha
+  if (it.has_alpha) {
+    imgEl.classList.add('lb-img--alpha');
+    dialog.classList.add('lightbox--alpha');
+  } else {
+    imgEl.classList.remove('lb-img--alpha');
+    dialog.classList.remove('lightbox--alpha');
+  }
   counterEl.textContent = `${i + 1} / ${items.length}`;
   barEl.textContent =
     `${it.ts} · ${it.width}×${it.height} · ${it.steps} steps · ` +

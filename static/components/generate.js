@@ -193,39 +193,51 @@ export async function render(root) {
     document.getElementById('progress-fill').style.width = '0%';
     document.getElementById('progress-info').textContent = 'Starting…';
     document.getElementById('result-area').innerHTML = '';
+    const t0 = performance.now();
+
+    /** Compose the status line — timer + phase.
+     *  Always shows ⏱ NN.Ns so a stale-looking "0.0s" can never happen. */
+    function paintStatus(phase, msg) {
+      const elapsed = (performance.now() - t0) / 1000;
+      const phaseText = msg || phase || 'denoising';
+      document.getElementById('progress-info').textContent =
+        `⏱ ${elapsed.toFixed(1)}s · ${phaseText}`;
+    }
 
     try {
       // SSE doesn't support AbortController in the same way — but we can
       // race it against a timeout/abort. For now we just iterate.
       for await (const evt of streamGenerate(req)) {
-        if (evt.phase) {
-          document.getElementById('progress-info').textContent =
-            evt.msg || evt.phase;
-        }
         if (typeof evt.progress === 'number') {
           document.getElementById('progress-fill').style.width =
-            (evt.progress * 100) + '%';
-          if (evt.elapsed != null) {
-            document.getElementById('progress-info').textContent =
-              `⏱ ${evt.elapsed.toFixed(1)}s · ${evt.phase || 'denoising'}`;
-          }
-        }
-        if (evt.error) {
-          toast(evt.error, 'error');
-          break;
+            Math.max(0, Math.min(100, evt.progress * 100)) + '%';
         }
         if (evt.result) {
+          // Fill bar fully on success regardless of last server tick.
+          document.getElementById('progress-fill').style.width = '100%';
+          paintStatus('done');
           renderResult(evt.result);
           // Notify history tab if mounted
           window.dispatchEvent(new CustomEvent('history:invalidate'));
+          continue;
+        }
+        if (evt.error) {
+          paintStatus('error');
+          toast(evt.error, 'error');
+          break;
+        }
+        // For any other event (phase connecting, phase denoising, progress ticks),
+        // show the local elapsed timer so the user always sees motion.
+        if (evt.phase || evt.msg || typeof evt.progress === 'number') {
+          paintStatus(evt.phase || 'denoising', evt.msg);
         }
       }
     } catch (e) {
+      paintStatus('error');
       toast(e.message || String(e), 'error');
     } finally {
       currentRequest = null;
       document.getElementById('submit-btn').textContent = 'Generate';
-      document.getElementById('progress-fill').style.width = '100%';
     }
   });
 }

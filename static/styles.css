@@ -39,8 +39,8 @@ html, body {
   padding: 0;
   background: var(--bg);
   color: var(--fg);
-  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
-  font-size: 14px;
+  font-family: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  font-size: 15px;
   line-height: 1.5;
   min-height: 100vh;
 }
@@ -49,45 +49,103 @@ a { color: var(--accent); }
 
 /* ========== Layout ========== */
 
-header.topbar {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 0.85rem 1.25rem;
-  border-bottom: 1px solid var(--border);
-  background: var(--bg-2);
-  box-shadow: 0 1px 3px var(--shadow);
+:root {
+  --content-max: 1100px;
+  --content-pad: 1.5rem;
 }
 
-header.topbar h1 {
-  margin: 0;
-  font-size: 1.25rem;
+header.topbar {
+  background: var(--bg-2);
+  border-bottom: 1px solid var(--border);
+  box-shadow: 0 1px 3px var(--shadow);
+  position: sticky;
+  top: 0;
+  z-index: 10;
+}
+.topbar-inner {
+  max-width: var(--content-max);
+  margin: 0 auto;
+  padding: 0.85rem var(--content-pad);
+  display: flex;
+  align-items: center;
+  gap: 1.5rem;
+  font-family: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+}
+header.topbar .brand {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.6rem;
+  text-decoration: none;
+  color: inherit;
   font-weight: 700;
+  letter-spacing: -0.01em;
+}
+header.topbar .brand-mark {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 8px;
+  background: linear-gradient(135deg, var(--accent), var(--accent-2));
+  color: #0b0f1a;
+  font-weight: 800;
+  font-size: 0.95rem;
+  letter-spacing: -0.02em;
+}
+header.topbar .brand-name {
+  font-size: 1.05rem;
   background: linear-gradient(90deg, var(--accent), var(--accent-2));
   -webkit-background-clip: text;
   -webkit-text-fill-color: transparent;
   background-clip: text;
-  letter-spacing: 0.01em;
 }
-
 header.topbar .build-tag {
   color: var(--muted);
   font-size: 0.7rem;
-  margin-left: 0.6rem;
+  font-weight: 500;
+  margin-left: 0.4rem;
+  font-feature-settings: "tnum";
 }
-
+header.topbar .primary-nav {
+  display: flex;
+  gap: 0.25rem;
+  margin-left: auto;
+}
+header.topbar .primary-nav a {
+  display: inline-block;
+  padding: 0.55rem 1rem;
+  font-size: 1rem;
+  font-weight: 500;
+  letter-spacing: -0.005em;
+  color: var(--muted);
+  text-decoration: none;
+  border-radius: 8px;
+  transition: color 120ms, background 120ms;
+}
+header.topbar .primary-nav a:hover {
+  color: var(--fg);
+  background: var(--bg-3);
+}
+header.topbar .primary-nav a.active {
+  color: var(--fg);
+  background: var(--bg-3);
+  box-shadow: inset 0 -2px 0 0 var(--accent);
+}
 header.topbar .actions {
   display: flex;
   gap: 0.4rem;
+  margin-left: 0.5rem;
 }
-
 button.iconbtn {
   background: transparent;
   border: 1px solid var(--border);
   color: var(--fg);
   border-radius: 8px;
-  padding: 0.45rem 0.65rem;
-  font-size: 1.05rem;
+  padding: 0.45rem 0.75rem;
+  font-size: 0.85rem;
+  font-weight: 500;
+  font-family: inherit;
   cursor: pointer;
   transition: background 120ms, border-color 120ms;
 }
@@ -96,33 +154,9 @@ button.iconbtn:hover {
   border-color: var(--accent);
 }
 
-nav.tabs {
-  display: flex;
-  gap: 0.25rem;
-  padding: 0.5rem 1.25rem 0;
-  border-bottom: 1px solid var(--border);
-  background: var(--bg-2);
-}
-
-nav.tabs button {
-  background: transparent;
-  border: none;
-  color: var(--muted);
-  padding: 0.6rem 1rem;
-  font-size: 0.95rem;
-  cursor: pointer;
-  border-bottom: 2px solid transparent;
-  transition: color 120ms, border-color 120ms;
-}
-nav.tabs button:hover { color: var(--fg); }
-nav.tabs button.active {
-  color: var(--fg);
-  border-bottom-color: var(--accent);
-}
-
 main {
-  padding: 1.5rem 1.5rem 3rem;
-  max-width: 1400px;
+  padding: 1.5rem var(--content-pad) 3rem;
+  max-width: var(--content-max);
   margin: 0 auto;
 }
 
@@ -354,7 +388,7 @@ input[type=range]:disabled { opacity: 0.4; cursor: not-allowed; }
 .gen-form {
   display: grid;
   gap: 1rem;
-  max-width: 1100px;
+  max-width: var(--content-max);
 }
 
 .progress-bar {
@@ -440,6 +474,30 @@ input[type=range]:disabled { opacity: 0.4; cursor: not-allowed; }
 }
 @media (max-width: 1100px) { .masonry { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
 
+/* ========== Responsive header ==========
+   On narrow screens the brand and primary nav share one row but
+   the build tag and theme button stack below to keep tap targets
+   readable without horizontal scroll. */
+@media (max-width: 640px) {
+  .topbar-inner {
+    flex-wrap: wrap;
+    gap: 0.5rem 1rem;
+    padding: 0.65rem 1rem;
+  }
+  header.topbar .primary-nav {
+    order: 3;
+    width: 100%;
+    margin-left: 0;
+    border-top: 1px solid var(--border);
+    padding-top: 0.5rem;
+  }
+  header.topbar .primary-nav a {
+    padding: 0.55rem 0.85rem;
+    font-size: 0.95rem;
+  }
+  header.topbar .build-tag { display: none; }
+}
+
 .tile {
   position: relative;
   background: var(--tile-bg);
@@ -458,6 +516,92 @@ input[type=range]:disabled { opacity: 0.4; cursor: not-allowed; }
   width: 100%;
   height: auto;
   display: block;
+}
+
+/* ========== Transparent-PNG checker pattern ==========
+   When a generation has alpha, show a checker pattern through the
+   tile (or lightbox image) so transparency is obvious at a glance.
+   The pattern works in both themes: dark grey + lighter grey, with
+   a subtle accent tint so it reads as "design surface", not
+   "default fallback". */
+
+/* CSS variables per-theme for the checker palette */
+:root {
+  --checker-color-1: #1a1b1f;
+  --checker-color-2: #2c2d33;
+  --checker-color-3: #1e1f24;
+}
+[data-theme="light"] {
+  --checker-color-1: #ffffff;
+  --checker-color-2: #d6dbe5;
+  --checker-color-3: #e8ecf3;
+}
+
+/* Tile variant: 12px squares, repeats across the whole tile */
+.tile--alpha {
+  background:
+    linear-gradient(45deg,
+      var(--checker-color-1) 25%, transparent 25%,
+      transparent 75%, var(--checker-color-2) 75%) 0 0 / 12px 12px,
+    linear-gradient(45deg,
+      var(--checker-color-2) 25%, var(--checker-color-3) 25%,
+      var(--checker-color-3) 75%, var(--checker-color-1) 75%) 6px 6px / 12px 12px,
+    var(--checker-color-3);
+  background-color: var(--checker-color-3);
+}
+/* Subtle accent stripe in the upper-right so a tile stands out as a
+   design asset in the gallery, mirroring how design apps badge alpha. */
+.tile--alpha::after {
+  content: "α";
+  position: absolute;
+  top: 6px;
+  right: 8px;
+  font-family: "Times New Roman", serif;
+  font-style: italic;
+  font-size: 0.85rem;
+  line-height: 1;
+  color: var(--muted);
+  background: rgba(255, 255, 255, 0.55);
+  width: 16px;
+  height: 16px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  border: 1px solid rgba(0, 0, 0, 0.08);
+  pointer-events: none;
+  opacity: 0.75;
+}
+[data-theme="dark"] .tile--alpha::after {
+  background: rgba(0, 0, 0, 0.55);
+  border-color: rgba(255, 255, 255, 0.10);
+}
+
+/* Lightbox image: larger 24px squares + corner badge so it's
+   obvious when the viewer you're seeing has transparency. */
+dialog.lightbox img#lb-img {
+  max-width: 100%;
+  max-height: calc(100vh - 140px);
+  height: auto;
+  width: auto;
+  object-fit: contain;
+  display: block;
+}
+dialog.lightbox .lb-img--alpha {
+  background:
+    linear-gradient(45deg,
+      var(--checker-color-1) 25%, transparent 25%,
+      transparent 75%, var(--checker-color-2) 75%) 0 0 / 24px 24px,
+    linear-gradient(45deg,
+      var(--checker-color-2) 25%, var(--checker-color-3) 25%,
+      var(--checker-color-3) 75%, var(--checker-color-1) 75%) 12px 12px / 24px 24px,
+    var(--checker-color-3);
+}
+/* The lightbox image is wrapped implicitly by the dialog, so an
+   inline badge via ::after won't work; we paint it via a positioned
+   div only when --alpha is set. The CSS sets a fallback label too. */
+dialog.lightbox--alpha::backdrop {
+  background: rgba(0, 0, 0, 0.85);
 }
 .empty {
   padding: 3rem 1rem;

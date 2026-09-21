@@ -1,28 +1,48 @@
 // Main app controller. Tab switching, theme, build tag, mount per-tab.
 
-import { render as renderGenerate } from './components/generate.js';
-import { render as renderHistory } from './components/history.js';
-import { render as renderSettings } from './components/settings.js';
-import { api } from './api.js';
+// Read the build SHA stamped into the HTML by the server so we can
+// cache-bust the inner module graph. Without this, browsers keep
+// using stale component JS even though app.js itself was reloaded.
+const BUILD =
+  document.querySelector('meta[name="build"]')?.content || 'dev';
 
-const tabs = document.querySelectorAll('nav.tabs button');
+// Use dynamic imports with explicit ?v= so each component is a
+// separately-cached resource that the browser refetches when the
+// build SHA changes.
+const loaders = {
+  generate: () => import(`./components/generate.js?v=${BUILD}`),
+  history: () => import(`./components/history.js?v=${BUILD}`),
+  settings: () => import(`./components/settings.js?v=${BUILD}`),
+};
+const loadApi = () => import(`./api.js?v=${BUILD}`);
+
+const tabs = document.querySelectorAll('[data-tab]');
 const sections = {
   generate: document.getElementById('tab-generate'),
   history: document.getElementById('tab-history'),
   settings: document.getElementById('tab-settings'),
 };
 
-const renders = { generate: renderGenerate, history: renderHistory, settings: renderSettings };
 const mounted = { generate: false, history: false, settings: false };
+const renderers = { generate: null, history: null, settings: null };
 
 async function activate(name) {
-  tabs.forEach(b => b.classList.toggle('active', b.dataset.tab === name));
+  if (!sections[name]) return;
+  tabs.forEach(el => {
+    const isActive = el.dataset.tab === name;
+    el.classList.toggle('active', isActive);
+    if (el.tagName === 'A') {
+      el.setAttribute('aria-current', isActive ? 'page' : 'false');
+    }
+  });
   for (const k of Object.keys(sections)) {
     sections[k].hidden = k !== name;
   }
   if (!mounted[name]) {
     mounted[name] = true;
-    await renders[name](sections[name]);
+    const mod = await loaders[name]();
+    renderers[name] = mod.render;
+    await renderers[name](sections[name]);
   }
   if (location.hash.replace('#', '') !== name) {
     history.replaceState(null, '', `#${name}`);
@@ -30,35 +50,41 @@ async function activate(name) {
   localStorage.setItem('activeTab', name);
 }
 
-tabs.forEach(b => b.addEventListener('click', () => activate(b.dataset.tab)));
+tabs.forEach(el => {
+  el.addEventListener('click', e => {
+    e.preventDefault();
+    activate(el.dataset.tab);
+  });
+});
 window.addEventListener('hashchange', () => {
   const t = (location.hash || '').replace('#', '');
   if (sections[t]) activate(t);
 });
 
-// Theme toggle
+// Theme toggle (text-only, no emoji — matches the brand font feel).
 const themeBtn = document.getElementById('theme-btn');
 const stored = localStorage.getItem('theme') || 'dark';
 document.documentElement.dataset.theme = stored;
 function paintThemeBtn() {
   const cur = document.documentElement.dataset.theme;
-  themeBtn.textContent = cur === 'dark' ? '☀' : '🌙';
-  themeBtn.setAttribute('aria-label', `Switch to ${cur === 'dark' ? 'light' : 'dark'} theme`);
-  themeBtn.title = `Switch to ${cur === 'dark' ? 'light' : 'dark'} theme`;
+  const next = cur === 'dark' ? 'Light mode' : 'Dark mode';
+  themeBtn.textContent = next;
+  themeBtn.title = `Switch to ${next.toLowerCase()}`;
+  themeBtn.setAttribute('aria-label', themeBtn.title);
 }
 paintThemeBtn();
 themeBtn.addEventListener('click', () => {
   const cur = document.documentElement.dataset.theme;
-  const next = cur === 'dark' ? 'light' : 'dark';
-  document.documentElement.dataset.theme = next;
-  localStorage.setItem('theme', next);
+  const nxt = cur === 'dark' ? 'light' : 'dark';
+  document.documentElement.dataset.theme = nxt;
+  localStorage.setItem('theme', nxt);
   paintThemeBtn();
 });
 
-// Build tag
-api.get('/api/meta').then(m => {
-  document.getElementById('build-tag').textContent = m.build;
-});
+// Build tag — show the short SHA so you can see at a glance which
+// build you're actually running.
+const buildTag = document.getElementById('build-tag');
+if (buildTag) buildTag.textContent = BUILD;
 
 // Mount initial tab — prefer hash, else last persisted, else default
 const initialTab =

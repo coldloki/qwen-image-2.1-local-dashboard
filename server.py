@@ -52,6 +52,32 @@ DB_PATH = DATA_DIR / "studio.db"
 BRAIN_URL = os.environ.get("BRAIN_URL", "http://localhost:30010")
 
 THUMB_MAX_SIDE = int(os.environ.get("THUMB_MAX_SIDE", "384"))
+
+
+def _detect_build_sha() -> str:
+    """Best-effort git short SHA for cache-busting.
+
+    Priority: BUILD_TAG env > git rev-parse > "dev".
+    Captured once at import so every response is stamped with the
+    same identifier for the lifetime of the process."""
+    explicit = os.environ.get("BUILD_TAG")
+    if explicit:
+        return explicit
+    try:
+        import subprocess
+        out = subprocess.check_output(
+            ["git", "rev-parse", "--short", "HEAD"],
+            cwd=str(ROOT),
+            stderr=subprocess.DEVNULL,
+            timeout=2,
+        )
+        sha = out.decode("utf-8", "ignore").strip()
+        return sha or "dev"
+    except Exception:
+        return "dev"
+
+
+BUILD_SHA = _detect_build_sha()
 THUMB_QUALITY = int(os.environ.get("THUMB_QUALITY", "78"))
 
 for d in (DATA_DIR, IMAGES_DIR, THUMBS_DIR):
@@ -74,7 +100,8 @@ CREATE TABLE IF NOT EXISTS history (
     output_format TEXT NOT NULL,
     filename      TEXT NOT NULL,
     elapsed_s     REAL NOT NULL,
-    size_bytes    INTEGER NOT NULL
+    size_bytes    INTEGER NOT NULL,
+    has_alpha     INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE INDEX IF NOT EXISTS history_ts_idx ON history(ts DESC);
@@ -118,6 +145,14 @@ def init_db() -> None:
     conn = db()
     try:
         conn.executescript(SCHEMA)
+        # Lightweight column-level migrations for existing DBs
+        existing_cols = {
+            row["name"] for row in conn.execute("PRAGMA table_info(history)")
+        }
+        if "has_alpha" not in existing_cols:
+            conn.execute(
+                "ALTER TABLE history ADD COLUMN has_alpha INTEGER NOT NULL DEFAULT 0"
+            )
         for k, v in DEFAULT_SETTINGS.items():
             conn.execute(
                 "INSERT OR IGNORE INTO settings(key, value) VALUES (?, ?)",
@@ -184,12 +219,27 @@ def _save_original(raw: bytes, ext: str) -> tuple[str, Path]:
 
 
 def _make_thumb(src_path: Path, dest_path: Path) -> None:
+    """Thumbnail to WebP at THUMB_MAX_SIDE.
+
+    Preserves alpha when the source has it so transparent PNGs show
+    their actual cutouts in the gallery grid. JPEG / opaque PNG sources
+    stay RGB. WebP lossless is used for the alpha path so we don't
+    smudge edges with chroma subsampling.
+    """
     with Image.open(src_path) as img:
         img.load()
         img.thumbnail((THUMB_MAX_SIDE, THUMB_MAX_SIDE), Image.LANCZOS)
-        if img.mode != "RGB":
-            img = img.convert("RGB")
-        img.save(dest_path, format="WEBP", quality=THUMB_QUALITY, method=4)
+        has_alpha = img.mode in ("RGBA", "LA") or (
+            img.mode == "P" and "transparency" in img.info
+        )
+        if has_alpha and img.mode != "RGBA":
+            img = img.convert("RGBA")
+        if has_alpha:
+            img.save(dest_path, format="WEBP", lossless=True, method=4)
+        else:
+            if img.mode != "RGB":
+                img = img.convert("RGB")
+            img.save(dest_path, format="WEBP", quality=THUMB_QUALITY, method=4)
 
 
 def _row_to_dict(row: sqlite3.Row) -> dict[str, Any]:
@@ -207,6 +257,7 @@ def _row_to_dict(row: sqlite3.Row) -> dict[str, Any]:
         "filename": row["filename"],
         "elapsed_s": row["elapsed_s"],
         "size_bytes": row["size_bytes"],
+        "has_alpha": bool(row["has_alpha"]) if "has_alpha" in row.keys() else False,
         "thumb_url": f"/images/{row['id']}/thumb",
         "image_url": f"/images/{row['id']}/original",
     }
@@ -249,9 +300,42 @@ class NoCacheStaticMiddleware(BaseHTTPMiddleware):
 app.add_middleware(NoCacheStaticMiddleware)
 
 
+def _html_response(body: str):
+    from starlette.responses import Response
+    return Response(content=body, media_type="text/html")
+
+
 @app.get("/")
-async def index() -> FileResponse:
-    return FileResponse(STATIC_DIR / "index.html")
+async def index():
+    """Serve index.html stamped with the current build SHA so the
+    browser always loads the matching JS/CSS module graph.
+
+    The browser caches each `?v=<sha>` URL as a separate resource;
+    bumping the SHA on every deploy guarantees a fresh graph even
+    if the page itself stays open across deploys."""
+    html = (STATIC_DIR / "index.html").read_text(encoding="utf-8")
+    # Stamp CSS + JS so the browser sees them as new resources.
+    html = html.replace(
+        'href="/static/styles.css"',
+        f'href="/static/styles.css?v={BUILD_SHA}"',
+        1,
+    )
+    html = html.replace(
+        'src="/static/app.js"',
+        f'src="/static/app.js?v={BUILD_SHA}"',
+        1,
+    )
+    # Also stamp the build meta tag so app.js can read it.
+    if '<meta name="build"' not in html:
+        html = html.replace(
+            "<title>qwen-studio</title>",
+            f'<title>qwen-studio</title>\n  '
+            f'<meta name="build" content="{BUILD_SHA}">',
+            1,
+        )
+    resp = _html_response(html)
+    resp.headers["X-Build"] = BUILD_SHA
+    return resp
 
 
 @app.get("/images/{image_id}/{kind}")
@@ -319,55 +403,74 @@ async def generate(req: GenerateRequest) -> StreamingResponse:
         payload.pop("negative_prompt")
 
     async def event_stream():
-        # Phase: connecting
         yield _sse({"phase": "connecting", "msg": f"Calling {server_url}…"})
         t0 = time.time()
+
+        # Use a queue so progress ticks flow alongside the response.
+        # Progress curve is a gentle ramp — we don't really know where in
+        # generation the brain is, so we just give the user a sense of
+        # motion while the actual request is in flight.
+        queue: asyncio.Queue[str | None] = asyncio.Queue()
+
+        async def pump_ticks(stop: asyncio.Event):
+            """Tick every 250ms; push SSE-formatted JSON into queue."""
+            while not stop.is_set():
+                elapsed = time.time() - t0
+                # Two regimes: fast (<=4s) and slow
+                if elapsed < 4.0:
+                    pct = (elapsed / 4.0) * 0.7
+                elif elapsed < 12.0:
+                    pct = 0.7 + (elapsed - 4.0) / 8.0 * 0.20
+                else:
+                    pct = 0.9 + min(0.05, (elapsed - 12.0) / 60.0)
+                pct = round(min(0.95, pct), 3)
+                await queue.put(_sse({
+                    "progress": pct, "elapsed": round(elapsed, 1),
+                    "phase": "denoising",
+                }))
+                try:
+                    await asyncio.wait_for(stop.wait(), timeout=0.25)
+                except asyncio.TimeoutError:
+                    pass
+
+        stop = asyncio.Event()
+        tick_task = asyncio.create_task(pump_ticks(stop))
+
         try:
             async with httpx.AsyncClient(timeout=httpx.Timeout(600.0, connect=10.0)) as c:
-                # We can't truly stream progress from SGLang without modifying
-                # the upstream protocol. For now we poll elapsed-time and
-                # report the phase as 'denoising' once we see bytes flowing.
-                yield _sse({"phase": "denoising", "msg": f"Running {req.steps} steps…", "elapsed": 0.0})
-                # Last-resort: send a synthetic progress tick loop on a parallel
-                # task that stops once the request returns. The real end
-                # timestamp is the time the response arrives.
-                tick_stop = asyncio.Event()
-
-                async def pulse():
-                    while not tick_stop.is_set():
-                        await asyncio.sleep(0.5)
-                        if tick_stop.is_set():
-                            break
-                        elapsed = time.time() - t0
-                        # Assume ~90s budget for a 28-step 1024x1024 run.
-                        pct = min(0.95, elapsed / 90.0)
-                        yield _sse({"progress": round(pct, 3), "elapsed": round(elapsed, 1)})
-
-                # We can't yield mid-async-with easily; do a single long-poll
-                # request and emit one tick per second before/after.
-                async def tick_loop():
-                    while not tick_stop.is_set():
-                        elapsed = time.time() - t0
-                        yield _sse({"progress": round(min(0.95, elapsed / 90.0), 3),
-                                    "elapsed": round(elapsed, 1)})
-                        try:
-                            await asyncio.wait_for(tick_stop.wait(), timeout=1.0)
-                        except asyncio.TimeoutError:
-                            pass
-
-                tick_gen = tick_loop()
+                # first progress tick at ~0s
+                await queue.put(_sse({
+                    "phase": "denoising", "msg": f"Running {req.steps} steps…",
+                    "elapsed": 0.0,
+                }))
                 resp_task = asyncio.create_task(c.post(
                     f"{server_url.rstrip('/')}/v1/images/generations",
                     json=payload,
                 ))
-                # Pump ticks until response arrives.
+
+                # Drain ticks while waiting for response.
+                # As soon as the response arrives, stop ticking and drain.
                 while not resp_task.done():
                     try:
-                        msg = await asyncio.wait_for(tick_gen.__anext__(), timeout=1.0)
+                        msg = await asyncio.wait_for(queue.get(), timeout=0.5)
                         yield msg
-                    except (asyncio.TimeoutError, StopAsyncIteration):
+                    except asyncio.TimeoutError:
                         pass
-                tick_stop.set()
+                # Stop pumping ticks FIRST so no new items appear,
+                # then drain what was queued before stopping.
+                stop.set()
+                try:
+                    await asyncio.wait_for(tick_task, timeout=1.5)
+                except (asyncio.TimeoutError, asyncio.CancelledError):
+                    pass
+                while not queue.empty():
+                    try:
+                        msg = queue.get_nowait()
+                        if msg:
+                            yield msg
+                    except asyncio.QueueEmpty:
+                        break
+
                 resp = await resp_task
                 if resp.status_code != 200:
                     yield _sse({"error": f"brain HTTP {resp.status_code}: {resp.text[:300]}"})
@@ -395,9 +498,12 @@ async def generate(req: GenerateRequest) -> StreamingResponse:
                     return
                 raw = base64.b64decode(b64)
                 elapsed = time.time() - t0
-                # Decode dimensions
+                # Decode dimensions and detect alpha
                 with Image.open(io.BytesIO(raw)) as im:
                     w, h = im.size
+                    has_alpha = im.mode in ("RGBA", "LA") or (
+                        im.mode == "P" and "transparency" in im.info
+                    )
                 ext = _ext_for(req.output_format)
                 image_id, path = _save_original(raw, ext)
                 thumb_path = THUMBS_DIR / f"{image_id}.webp"
@@ -412,8 +518,9 @@ async def generate(req: GenerateRequest) -> StreamingResponse:
                     conn.execute(
                         """INSERT INTO history
                            (id, ts, prompt, negative, width, height, steps, guidance,
-                            seed, output_format, filename, elapsed_s, size_bytes)
-                           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                            seed, output_format, filename, elapsed_s, size_bytes,
+                            has_alpha)
+                           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                         (
                             image_id,
                             datetime.utcnow().isoformat(timespec="seconds"),
@@ -425,6 +532,7 @@ async def generate(req: GenerateRequest) -> StreamingResponse:
                             path.name,
                             round(elapsed, 2),
                             len(raw),
+                            1 if has_alpha else 0,
                         ),
                     )
                     conn.commit()
@@ -604,7 +712,7 @@ async def meta() -> dict:
     return {
         "name": "qwen-studio",
         "version": "0.1.0",
-        "build": os.environ.get("BUILD_TAG", "dev"),
+        "build": BUILD_SHA,
         "brain_url": BRAIN_URL,
     }
 
