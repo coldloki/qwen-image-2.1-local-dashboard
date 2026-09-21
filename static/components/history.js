@@ -289,7 +289,7 @@ function tileHtml(it, i) {
   }
   if (it.reference_image_ids && it.reference_image_ids.length) {
     const n = it.reference_image_ids.length;
-    badges.push(`<span class="tile-badge refs" data-id="${it.id}" data-action="open-refs" title="${n} reference image${n>1?'s':''}">${icon('paint-brush', { size: 12 })} ${n} ref${n>1?'s':''}</span>`);
+    badges.push(`<span class="tile-badge refs" data-id="${it.id}" data-action="open-refs" title="${n} reference image${n>1?'s':''}">${icon('swatch', { size: 12 })} ${n} ref${n>1?'s':''}</span>`);
   }
   return `
     <div class="tile${alpha}${checked}${selectable}" data-i="${i}" data-id="${it.id}" style="aspect-ratio:${ratio}">
