@@ -25,7 +25,7 @@ def main():
         page.wait_for_selector("#gallery-host", state="visible")
         page.screenshot(path=str(ART / "mobile-02-history.png"), full_page=True)
 
-        # Verify grid uses TWO columns at this width (412px is between 360 and 480 breakpoint)
+        # Verify grid uses THREE columns at this width (user wants 3 cols on mobile)
         cols = page.evaluate("""
             () => {
               const el = document.querySelector('.masonry');
@@ -36,8 +36,23 @@ def main():
         print(f"mobile grid columns: {cols}")
         if cols is None:
             sys.exit("FAIL: masonry not found")
-        if cols != 2:
-            print(f"FAIL: expected 2 columns on mobile (412px), got {cols}")
+        if cols != 3:
+            print(f"FAIL: expected 3 columns on mobile (412px), got {cols}")
+            sys.exit(1)
+
+        # Verify tile has NO text below the image (gallery-only)
+        tile_text_below_img = page.evaluate("""
+            () => {
+              const tile = document.querySelector('.tile');
+              if (!tile) return null;
+              // children of .tile that are not <img>
+              const nonImg = Array.from(tile.children).filter(e => e.tagName !== 'IMG');
+              return nonImg.length;
+            }
+        """)
+        print(f"tile non-img children: {tile_text_below_img}")
+        if tile_text_below_img != 0:
+            print(f"FAIL: tile should have only an image, but has {tile_text_below_img} other children")
             sys.exit(1)
 
         # Settings

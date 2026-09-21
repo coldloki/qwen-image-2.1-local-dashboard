@@ -1,7 +1,7 @@
 // History tab — masonry gallery + lightbox + per-tile reroll.
 
 import { api } from '../api.js';
-import { toast, escape } from '../util.js';
+import { toast } from '../util.js';
 import { consumeReroll } from './generate.js';
 
 let items = [];
@@ -15,10 +15,10 @@ export async function render(root) {
   items = await api.get('/api/history');
   root.innerHTML = `
     <div class="history-toolbar">
-      <div class="count" id="count"></div>
+      <div></div>
       <div>
-        <button class="secondary" id="refresh-btn">↻ Refresh</button>
-        <button class="danger" id="clear-btn">Clear all</button>
+        <button class="iconbtn" id="refresh-btn" title="Refresh history">↻</button>
+        <button class="iconbtn danger" id="clear-btn" title="Clear all">🗑</button>
       </div>
     </div>
     <div id="gallery-host"></div>
@@ -29,6 +29,10 @@ export async function render(root) {
         <button class="lb-nav lb-prev" id="lb-prev" aria-label="Previous">‹</button>
         <img id="lb-img" alt="">
         <button class="lb-nav lb-next" id="lb-next" aria-label="Next">›</button>
+        <div class="lb-actions">
+          <button class="iconbtn" id="lb-reroll" title="Re-roll with these params">🎲</button>
+          <button class="iconbtn danger" id="lb-delete" title="Delete this image">🗑</button>
+        </div>
         <div class="lb-bar" id="lb-bar"></div>
       </div>
     </dialog>
@@ -46,9 +50,7 @@ export async function render(root) {
 
 function paint() {
   const host = document.getElementById('gallery-host');
-  const count = document.getElementById('count');
-  if (!host || !count) return;  // History tab not mounted yet
-  count.textContent = `${items.length} generation${items.length === 1 ? '' : 's'}`;
+  if (!host) return;  // History tab not mounted yet
   if (!items.length) {
     host.innerHTML = `<div class="empty">No history yet. Generate something on the 🎨 tab.</div>`;
     return;
@@ -59,25 +61,14 @@ function paint() {
     </div>
   `;
   host.querySelectorAll('.tile').forEach((el, i) => {
-    el.addEventListener('click', (e) => {
-      if (e.target.closest('.tile-reroll')) return;
-      openLightbox(i);
-    });
-    const rerollBtn = el.querySelector('.tile-reroll');
-    rerollBtn?.addEventListener('click', (e) => {
-      e.stopPropagation();
-      reroll(items[i]);
-    });
+    el.addEventListener('click', (e) => openLightbox(i));
   });
 }
 
 function tileHtml(it, i) {
-  const ts = (it.ts || '').replace('T', ' ').slice(0, 16);
   return `
     <div class="tile" data-i="${i}" data-id="${it.id}">
       <img src="${it.thumb_url}" alt="" loading="lazy">
-      <button class="tile-reroll" title="Re-roll this generation">🎲</button>
-      <div class="tile-meta">${escape(ts)} · ${it.width}×${it.height} · seed ${it.seed ?? '?'}</div>
     </div>
   `;
 }
@@ -86,6 +77,26 @@ function bindLightbox() {
   document.getElementById('lb-close').addEventListener('click', () => dialog.close());
   document.getElementById('lb-prev').addEventListener('click', () => nav(-1));
   document.getElementById('lb-next').addEventListener('click', () => nav(+1));
+  document.getElementById('lb-reroll').addEventListener('click', () => {
+    if (activeIndex >= 0) reroll(items[activeIndex]);
+  });
+  document.getElementById('lb-delete').addEventListener('click', async () => {
+    if (activeIndex < 0) return;
+    if (!confirm('Delete this image from history?')) return;
+    const it = items[activeIndex];
+    await api.del(`/api/history/${it.id}`);
+    items.splice(activeIndex, 1);
+    if (!items.length) {
+      dialog.close();
+      paint();
+      toast('Deleted', 'success');
+      return;
+    }
+    // Adjust activeIndex and open neighbor
+    activeIndex = Math.min(activeIndex, items.length - 1);
+    openLightbox(activeIndex);
+    paint();
+  });
   dialog.addEventListener('click', (e) => {
     if (e.target === dialog) dialog.close();
   });
