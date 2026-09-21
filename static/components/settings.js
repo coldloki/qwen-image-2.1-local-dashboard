@@ -70,19 +70,18 @@ export async function render(root) {
           </select>
         </div>
       </div>
-      <button class="secondary" id="save-defaults-btn" style="margin-top:0.6rem">Save defaults</button>
+      <button class="primary" id="save-defaults-btn" style="margin-top:var(--space-4); width:auto; padding:0.7rem 1.4rem">Save defaults</button>
     </div>
 
     <div class="settings-section">
       <h3 style="margin-top:0">Prompt presets</h3>
       <div id="preset-list"></div>
-      <div class="row" style="margin-top:1rem">
+      <div class="new-preset-form">
+        <div class="new-preset-label">New preset</div>
         <input type="text" id="new-preset-name" placeholder="preset name">
-      </div>
-      <div class="row" style="margin-top:0.4rem">
         <textarea id="new-preset-prompt" placeholder="prompt text…" rows="3"></textarea>
       </div>
-      <button class="secondary" id="add-preset-btn" style="margin-top:0.6rem">+ Add preset</button>
+      <button class="primary" id="add-preset-btn" style="margin-top:var(--space-3); width:auto; padding:0.7rem 1.4rem">+ Add preset</button>
     </div>
   `;
 

@@ -33,6 +33,7 @@ let ui = {
 export async function render(root) {
   items = await api.get('/api/history');
   root.innerHTML = `
+    <div class="history-section">
     <div class="history-toolbar">
       <div class="ht-left">
         <div class="search-wrap">
@@ -81,6 +82,7 @@ export async function render(root) {
           <span>Cancel</span>
         </button>
       </div>
+    </div>
     </div>
 
     <div id="gallery-host"></div>
