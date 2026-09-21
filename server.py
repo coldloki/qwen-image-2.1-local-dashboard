@@ -147,6 +147,8 @@ DEFAULT_SETTINGS = {
     # Advanced — same defaults that GenerateRequest uses
     "default_true_cfg": "1.0",
     "default_teacache": "1",
+    # Batch — number of images to produce per request
+    "default_n": "1",
 }
 
 
@@ -206,6 +208,9 @@ class GenerateRequest(BaseModel):
     # Defaults chosen so existing API clients keep working unchanged.
     true_cfg_scale: float = Field(1.0, ge=0.0, le=20.0)
     enable_teacache: bool = True
+    # Batch — generate N images in one request. Capped at 4 because
+    # larger batches inflate VRAM and our slot policy is 1 in flight.
+    n: int = Field(1, ge=1, le=4)
 
 
 class PresetIn(BaseModel):
@@ -224,6 +229,7 @@ class SettingsIn(BaseModel):
     default_format: str | None = None
     default_true_cfg: float | None = None
     default_teacache: bool | None = None
+    default_n: int | None = None
 
 
 # ============================================================ Image helpers
@@ -510,7 +516,7 @@ async def generate(req: GenerateRequest, request: Request):
         "guidance_scale": req.guidance,
         "true_cfg_scale": req.true_cfg_scale,
         "enable_teacache": req.enable_teacache,
-        "num_images": 1,
+        "n": req.n,
         "seed": None if req.seed < 0 else req.seed,
         "output_format": req.output_format,
     }
@@ -597,68 +603,86 @@ async def generate(req: GenerateRequest, request: Request):
                     yield _sse({"error": f"brain HTTP {resp.status_code}: {resp.text[:300]}"})
                     return
                 data = resp.json()
-                item = (data.get("data") or [{}])[0]
-                b64 = item.get("b64_json") or item.get("base64")
-                if not b64:
-                    # Brain returns a URL instead of b64. Follow it.
-                    url_or_path = item.get("url") or item.get("file_path")
-                    if url_or_path:
-                        # Resolve relative URL against BRAIN_URL
-                        if url_or_path.startswith("/"):
-                            full = BRAIN_URL.rstrip("/") + url_or_path
-                        elif url_or_path.startswith("output/"):
-                            full = BRAIN_URL.rstrip("/") + "/" + url_or_path
-                        else:
-                            full = url_or_path
-                        async with httpx.AsyncClient(timeout=60) as cli:
-                            r2 = await cli.get(full)
-                            r2.raise_for_status()
-                            b64 = base64.b64encode(r2.content).decode("ascii")
-                if not b64:
-                    yield _sse({"error": f"no b64_json in response: {json.dumps(data)[:300]}"})
+                items = data.get("data") or []
+                if not items:
+                    yield _sse({"error": f"empty data in response: {json.dumps(data)[:300]}"})
                     return
-                raw = base64.b64decode(b64)
+
+                # Resolve raw bytes for every image. Brain returns either
+                # b64_json directly or a relative URL/path we must follow.
+                async with httpx.AsyncClient(timeout=60) as cli:
+                    raw_list: list[bytes] = []
+                    for item in items:
+                        b64 = item.get("b64_json") or item.get("base64")
+                        if not b64:
+                            url_or_path = item.get("url") or item.get("file_path")
+                            if url_or_path:
+                                if url_or_path.startswith("/"):
+                                    full = BRAIN_URL.rstrip("/") + url_or_path
+                                elif url_or_path.startswith("output/"):
+                                    full = BRAIN_URL.rstrip("/") + "/" + url_or_path
+                                else:
+                                    full = url_or_path
+                                r2 = await cli.get(full)
+                                r2.raise_for_status()
+                                b64 = base64.b64encode(r2.content).decode("ascii")
+                        if not b64:
+                            yield _sse({"error": f"no image bytes in item: {json.dumps(item)[:200]}"})
+                            return
+                        raw_list.append(base64.b64decode(b64))
+
                 elapsed = time.time() - t0
-                # Decode dimensions and detect alpha
-                with Image.open(io.BytesIO(raw)) as im:
-                    w, h = im.size
-                    has_alpha = _has_real_alpha(im)
                 ext = _ext_for(req.output_format)
-                image_id, path = _save_original(raw, ext)
-                thumb_path = THUMBS_DIR / f"{image_id}.webp"
-                try:
-                    _make_thumb(path, thumb_path)
-                except Exception as e:
-                    print(f"[thumb] {image_id}: {e}", file=sys.stderr)
-                # Persist row
                 from datetime import datetime
+                now_iso = datetime.utcnow().isoformat(timespec="seconds")
+
+                # Persist N rows. One row per image — same pattern as the
+                # single-image path so history/download/lightbox keep
+                # working without modification.
+                image_ids: list[str] = []
                 conn = db()
                 try:
-                    conn.execute(
-                        """INSERT INTO history
-                           (id, ts, prompt, negative, width, height, steps, guidance,
-                            seed, output_format, filename, elapsed_s, size_bytes,
-                            has_alpha)
-                           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                        (
-                            image_id,
-                            datetime.utcnow().isoformat(timespec="seconds"),
-                            req.prompt,
-                            req.negative,
-                            w, h, req.steps, req.guidance,
-                            None if req.seed < 0 else req.seed,
-                            req.output_format,
-                            path.name,
-                            round(elapsed, 2),
-                            len(raw),
-                            1 if has_alpha else 0,
-                        ),
-                    )
+                    for raw in raw_list:
+                        with Image.open(io.BytesIO(raw)) as im:
+                            w, h = im.size
+                            has_alpha = _has_real_alpha(im)
+                        image_id, path = _save_original(raw, ext)
+                        thumb_path = THUMBS_DIR / f"{image_id}.webp"
+                        try:
+                            _make_thumb(path, thumb_path)
+                        except Exception as e:
+                            print(f"[thumb] {image_id}: {e}", file=sys.stderr)
+                        conn.execute(
+                            """INSERT INTO history
+                               (id, ts, prompt, negative, width, height, steps, guidance,
+                                seed, output_format, filename, elapsed_s, size_bytes,
+                                has_alpha)
+                               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                            (
+                                image_id,
+                                now_iso,
+                                req.prompt,
+                                req.negative,
+                                w, h, req.steps, req.guidance,
+                                None if req.seed < 0 else req.seed,
+                                req.output_format,
+                                path.name,
+                                round(elapsed, 2),
+                                len(raw),
+                                1 if has_alpha else 0,
+                            ),
+                        )
+                        image_ids.append(image_id)
                     conn.commit()
                 finally:
                     conn.close()
+                # Now that rows are committed, build entries for the SSE payload.
+                entries = [_build_entry(iid) for iid in image_ids]
                 yield _sse({"progress": 1.0, "elapsed": round(elapsed, 1), "phase": "done"})
-                yield _sse({"result": _build_entry(image_id)})
+                # Announce every image so the UI can refresh. Backwards
+                # compat: single-image clients still see one result event.
+                for entry in entries:
+                    yield _sse({"result": entry})
         except httpx.RequestError as e:
             yield _sse({"error": f"brain unreachable: {type(e).__name__}: {e}"})
         finally:

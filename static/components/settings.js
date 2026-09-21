@@ -84,6 +84,15 @@ export async function render(root) {
           <input type="checkbox" id="def_teacache" ${settings.default_teacache === '1' || settings.default_teacache === true ? 'checked' : ''}>
           Default TeaCache (faster)
         </label>
+        <div class="field">
+          <label>
+            Default images per request
+            <span class="hint" title="How many variants to produce when Generate is clicked. 1 = single image, 2/4 = small batch.">?</span>
+          </label>
+          <select id="def_n">
+            ${[1,2,4].map(v => `<option value="${v}"${String(settings.default_n ?? 1) === String(v) ? ' selected' : ''}>${v}${v === 1 ? ' (default)' : ''}</option>`).join('')}
+          </select>
+        </div>
       </div>
       <button class="primary" id="save-defaults-btn" style="margin-top:var(--space-4); width:auto; padding:0.7rem 1.4rem">Save defaults</button>
     </div>
@@ -198,6 +207,7 @@ function bindToolbar() {
       default_format: document.getElementById('def_format').value,
       default_true_cfg: parseFloat(document.getElementById('def_true_cfg').value),
       default_teacache: document.getElementById('def_teacache').checked,
+      default_n: parseInt(document.getElementById('def_n').value, 10),
     };
     await api.put('/api/settings', body);
     toast('Defaults saved', 'success');

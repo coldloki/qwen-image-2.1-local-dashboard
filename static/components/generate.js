@@ -36,6 +36,7 @@ export async function render(root) {
   const teacache = settings.default_teacache === undefined
     ? true
     : !!settings.default_teacache;
+  const defaultN = parseInt(settings.default_n ?? '1', 10);
 
   const rerollPrompt = reroll?.prompt ?? '';
   const rerollNeg = reroll?.negative ?? '';
@@ -50,6 +51,7 @@ export async function render(root) {
   const initFormat = reroll?.output_format || format;
   const initTrueCfg = reroll?.true_cfg_scale ?? trueCfg;
   const initTeacache = reroll?.enable_teacache ?? teacache;
+  const initN = [1,2,4].includes(reroll?.n) ? reroll.n : defaultN;
 
   root.innerHTML = `
     <form class="gen-form" id="gen-form">
@@ -172,7 +174,7 @@ export async function render(root) {
           <details class="advanced" id="advanced-details">
             <summary>
               <span class="advanced-label">Advanced</span>
-              <span class="advanced-hint" id="advanced-hint">true_cfg · teacache</span>
+              <span class="advanced-hint">tune qwen-specific options</span>
             </summary>
 
             <div class="slider-wrap advanced-slider">
@@ -185,6 +187,16 @@ export async function render(root) {
               </div>
               <input type="range" id="true-cfg" min="0" max="10" step="0.1" value="${initTrueCfg}">
               <div class="slider-ticks"><span>0</span><span>2.5</span><span>5</span><span>7.5</span><span>10</span></div>
+            </div>
+
+            <div class="field advanced-slider" style="margin-top:0.6rem">
+              <label for="n">
+                Images per request
+                <span class="hint" title="How many variants to produce in one click. 1 = single image, 2/4 = small batch (slower but lets you pick the best).">?</span>
+              </label>
+              <select id="n">
+                ${[1,2,4].map(v => `<option value="${v}"${initN === v ? ' selected' : ''}>${v}${v === 1 ? ' (default)' : ''}</option>`).join('')}
+              </select>
             </div>
 
             <label class="seed-random-toggle">
@@ -229,18 +241,6 @@ export async function render(root) {
     trueCfgEl.addEventListener('input', () =>
       paintBadge('true-cfg-val', parseFloat(trueCfgEl.value).toFixed(1))
     );
-  }
-  // Flip the Advanced hint depending on open/closed state.
-  const advDetails = document.getElementById('advanced-details');
-  const advHint = document.getElementById('advanced-hint');
-  if (advDetails && advHint) {
-    const syncHint = () => {
-      advHint.textContent = advDetails.open
-        ? 'tune qwen-specific options'
-        : 'true_cfg · teacache';
-    };
-    advDetails.addEventListener('toggle', syncHint);
-    syncHint();
   }
   const paintSeed = () => {
     const v = parseInt(seedEl.value, 10);
@@ -300,8 +300,11 @@ export async function render(root) {
       output_format: document.getElementById('format').value,
       true_cfg_scale: parseFloat(document.getElementById('true-cfg').value),
       enable_teacache: document.getElementById('teacache').checked,
+      n: parseInt(document.getElementById('n').value, 10),
     };
 
+    lastResults = [];
+    lastResult = null;
     sessionStorage.setItem('gen:last', JSON.stringify({
       prompt: req.prompt, negative: req.negative,
     }));
@@ -332,7 +335,8 @@ export async function render(root) {
           document.getElementById('progress-fill').style.width = '100%';
           paintStatus('done');
           lastResult = evt.result;
-          renderResult(evt.result);
+          lastResults.push(evt.result);
+          renderResults(lastResults);
           window.dispatchEvent(new CustomEvent('history:invalidate'));
           continue;
         }
@@ -359,6 +363,97 @@ export async function render(root) {
       btn.innerHTML = `${icon('sparkles', { size: 16 })}<span>Generate</span>`;
     }
   });
+}
+
+let lastResults = [];
+
+function renderResults(results) {
+  // Single image: existing layout. Multiple: tile grid.
+  if (results.length <= 1) {
+    if (results.length === 1) renderResult(results[0]);
+    else clearResult();
+    return;
+  }
+  const cards = results.map((entry, i) => `
+    <div class="result-tile${i === 0 ? ' selected' : ''}" data-index="${i}" data-id="${entry.id}">
+      <img src="${entry.image_url}" alt="${escape(entry.prompt)}" loading="lazy">
+      <span class="tile-num">${i + 1}/${results.length}</span>
+    </div>
+  `).join('');
+  const head = results[0];
+  document.getElementById('result-area').innerHTML = `
+    <div class="result-card result-grid">
+      <div class="result-meta">
+        <span><strong>${results.length} images</strong></span>
+        <span>${head.width}×${head.height}</span>
+        <span>${head.steps} steps</span>
+        <span>${head.elapsed_s}s</span>
+        <span>${head.output_format.toUpperCase()}</span>
+      </div>
+      <div class="result-tiles" id="result-tiles">
+        ${cards}
+      </div>
+      <details class="prompt-details">
+        <summary>Prompt</summary>
+        <div class="prompt-text">${escape(head.prompt)}</div>
+      </details>
+      <div class="result-actions">
+        <button type="button" class="secondary" id="reroll-btn" data-id="${head.id}">
+          ${icon('dice', { size: 14 })}<span>Re-roll</span>
+        </button>
+        <button type="button" class="secondary" id="download-all-btn">
+          ${icon('arrow-down-tray', { size: 14 })}<span>Download all</span>
+        </button>
+      </div>
+    </div>
+  `;
+  document.getElementById('reroll-btn').addEventListener('click', () => {
+    sessionStorage.setItem('gen:reroll', JSON.stringify(head));
+    document.dispatchEvent(new CustomEvent('reroll:from-result', { detail: head }));
+    toast('Loaded into form — re-rolls use same params', 'success');
+  });
+  document.getElementById('download-all-btn').addEventListener('click', () => {
+    results.forEach(e => {
+      const a = document.createElement('a');
+      a.href = e.image_url;
+      a.download = e.filename;
+      a.style.display = 'none';
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+    });
+  });
+  // Tile click opens a focused preview for that image. We use a fresh
+  // <dialog> per grid because the history lightbox expects the
+  // gallery "view" array and we don't want to mix scopes.
+  const tilesEl = document.getElementById('result-tiles');
+  tilesEl.querySelectorAll('.result-tile').forEach(tile => {
+    tile.addEventListener('click', () => {
+      const idx = parseInt(tile.dataset.index, 10);
+      const entry = results[idx];
+      const dlg = document.createElement('dialog');
+      dlg.className = 'lightbox';
+      dlg.innerHTML = `
+        <button class="lb-close" type="button" aria-label="Close">×</button>
+        <img src="${entry.image_url}" alt="${escape(entry.prompt)}">
+        <div class="lb-meta">${idx + 1} / ${results.length} · ${entry.width}×${entry.height} · seed ${entry.seed ?? 'random'}</div>
+      `;
+      document.body.appendChild(dlg);
+      dlg.addEventListener('click', e => {
+        // Click outside the image closes the dialog.
+        if (e.target === dlg) dlg.close();
+      });
+      dlg.querySelector('.lb-close').addEventListener('click', () => dlg.close());
+      dlg.addEventListener('close', () => dlg.remove());
+      dlg.showModal();
+    });
+  });
+}
+
+function clearResult() {
+  document.getElementById('result-area').innerHTML = `
+    <div class="result-empty">Last generated image will appear here</div>
+  `;
 }
 
 function renderResult(entry) {

@@ -658,6 +658,49 @@ input[type="range"] {
   margin-top: 0.7rem;
   flex-wrap: wrap;
 }
+
+/* Batch result grid (n>1). Tiles laid out in a responsive grid; first tile
+ * is highlighted. Clicking any tile opens the lightbox for that image. */
+.result-grid .result-tiles {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+  gap: 0.4rem;
+  margin-top: 0.7rem;
+}
+.result-grid .result-tile {
+  position: relative;
+  aspect-ratio: 1 / 1;
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+  cursor: pointer;
+  background: var(--bg-elev);
+  border: 2px solid transparent;
+  transition: border-color 0.12s, transform 0.12s;
+}
+.result-grid .result-tile:hover {
+  transform: translateY(-1px);
+}
+.result-grid .result-tile.selected {
+  border-color: var(--accent);
+}
+.result-grid .result-tile img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+.result-grid .tile-num {
+  position: absolute;
+  bottom: 4px;
+  right: 4px;
+  background: rgba(0, 0, 0, 0.55);
+  color: #fff;
+  font-size: 0.7rem;
+  padding: 1px 5px;
+  border-radius: 3px;
+  font-variant-numeric: tabular-nums;
+}
+
 .result-actions .secondary,
 .result-actions a.secondary {
   display: inline-flex;
