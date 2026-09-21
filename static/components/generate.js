@@ -82,6 +82,7 @@ export async function render(root) {
             <span class="slider-value" id="seed-val">${seed < 0 ? 'random' : seed}</span>
           </div>
           <input type="range" id="seed" min="-1" max="999999999" step="1" value="${seed}">
+          <div class="slider-ticks"><span>−1</span><span>5×10⁵</span><span>10⁹</span></div>
           <label class="seed-random-toggle">
             <input type="checkbox" id="seed-random" ${seed < 0 ? 'checked' : ''}>
             Random each time

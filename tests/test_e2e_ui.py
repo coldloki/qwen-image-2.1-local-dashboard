@@ -176,13 +176,30 @@ def main():
         step("settings save defaults")
         page.click('button[data-tab="settings"]')
         page.wait_for_selector("#save-defaults-btn", state="visible")
+        # Bump the steps default via slider and save
+        page.evaluate("""() => {
+          const el = document.getElementById('def_steps');
+          el.value = '8';
+          el.dispatchEvent(new Event('input', {bubbles: true}));
+          el.dispatchEvent(new Event('change', {bubbles: true}));
+        }""")
         page.click("#save-defaults-btn")
-        page.wait_for_timeout(400)
+        page.wait_for_timeout(500)
 
-        # Verify persisted
+        # Verify persisted (settings come back as strings from DB)
         s = page.evaluate("fetch('/api/settings').then(r=>r.json())")
-        if s.get("default_steps") != "8":
+        if int(s.get("default_steps", "0")) != 8:
             fails.append(f"defaults did not persist: {s}")
+        else:
+            # Reset back to 28 for next run
+            page.evaluate("""() => {
+              const el = document.getElementById('def_steps');
+              el.value = '28';
+              el.dispatchEvent(new Event('input', {bubbles: true}));
+              el.dispatchEvent(new Event('change', {bubbles: true}));
+            }""")
+            page.click("#save-defaults-btn")
+            page.wait_for_timeout(400)
 
         # ── 10. Settings → delete the test preset
         step("settings delete preset")

@@ -303,6 +303,31 @@ input[type=range]:focus::-webkit-slider-thumb {
 }
 input[type=range]:disabled { opacity: 0.4; cursor: not-allowed; }
 
+/* Mobile: enlarge tap target around the slider thumb.
+   The visible thumb stays a nice round dot, but the hit area is padded. */
+@media (hover: none) and (pointer: coarse) {
+  input[type=range] {
+    /* Pad so the track sits higher away from the bottom edge */
+    padding: 1rem 0;
+    margin: 0.6rem 0 0.2rem;
+  }
+  input[type=range]::-webkit-slider-thumb {
+    height: 22px;
+    width: 22px;
+    margin-top: -8px;
+  }
+  input[type=range]::-moz-range-thumb {
+    height: 22px;
+    width: 22px;
+  }
+  .hint {
+    /* Easier to long-press */
+    width: 22px;
+    height: 22px;
+    font-size: 0.85rem;
+  }
+}
+
 .slider-ticks {
   display: flex;
   justify-content: space-between;
