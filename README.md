@@ -173,32 +173,209 @@ in the `settings` table). The env var is the boot-time default.
 
 ---
 
-## Run (host)
+## Setup
 
-```bash
-pip install -r requirements.txt
-# Start the SGLang Diffusion brain separately on :30010
-python -m uvicorn server:app --host 0.0.0.0 --port 8000
-# open http://localhost:8000
+This project is a thin web UI on top of a brain container that runs
+[SGLang Diffusion](https://github.com/sgl-project/sglang). You need **two**
+containers running side-by-side:
+
+| Container         | This repo | Image                                  | Port  |
+| ----------------- | --------- | -------------------------------------- | ----- |
+| `qwen-image-sglang` | sibling project | `lmsysorg/sglang:v0.5.20-cu130`        | 30010 |
+| `qwen-studio`     | this repo | built from `./Dockerfile`              | 8000  |
+
+### Prerequisites
+
+- NVIDIA GPU with **≥ 24 GB VRAM** (RTX 3090, 4090, 5090; tested on RTX 3090)
+- Docker with the **NVIDIA Container Toolkit** installed (so containers can
+  pass-through the GPU)
+- **AMD64 host.** The SGLang image does not work on ARM. If you're on Apple
+  Silicon or an ARM server, the manifest still resolves to arm64 by default —
+  you must `platform: linux/amd64` in your compose file.
+- ~50 GB of disk for the model weights (bf16), plus ~10 GB for the SGLang
+  container's diffusion extras installed on first boot.
+- ~16 GB of shared memory — `shm_size: 16g` in the brain container is mandatory
+  for SGLang's PyTorch internals.
+
+### 1. Get the model weights
+
+SGLang Diffusion loads from a **diffusers-style** directory layout:
+
+```
+models/Qwen-Image-2.1/
+├── model_index.json
+├── transformer/
+├── text_encoder/
+├── tokenizer/
+├── vae/
+└── ...
 ```
 
-## Run (docker-compose)
-
-Add this service to the compose file that already runs the brain:
+The bf16 transformer is ~14 GB. The repo ID on Hugging Face is
+`Qwen/Qwen-Image-2.1` (check for the latest revisions). Download it once and
+mount it read-only:
 
 ```yaml
-qwen-studio:
-  build: ./qwen-studio
-  restart: unless-stopped
-  ports: ["8000:8000"]
-  environment:
-    BRAIN_URL: "http://qwen-image-sglang:30010"
-    MAX_CONCURRENT_GENERATIONS: "1"
-    THUMB_QUALITY: "78"
-  volumes:
-    - ./qwen-studio/data:/app/data:rw
-  depends_on:
-    sglang-diffusion: { condition: service_healthy }
+volumes:
+  - ./models/Qwen-Image-2.1:/models/Qwen-Image-2.1:ro
+```
+
+> **A note on GGUF quantised weights:** they exist for this model
+> (e.g. `qwen-image-2.1-Q4_K_M.gguf`, ~4 GB) but **SGLang's GGUF loader is
+> missing `.qweight` support for 5 transformer layers** in this model
+> (`modulation.1`, `norm_out.linear`, `proj_out`,
+> `time_text_embed.timestep_embedder.linear_{1,2}`) and currently raises
+> `Unsupported new parameter`. Stick with the bf16 diffusers layout.
+
+### 2. Start the brain (`qwen-image-sglang`)
+
+A complete `docker-compose.yml` for the brain side, with an entrypoint that
+boots SGLang on a 24 GB card:
+
+**`docker-compose.yml`** (in a sibling directory, e.g. `qwen-image/`):
+
+```yaml
+services:
+  sglang-diffusion:
+    # v0.5.20-cu130 ships CUDA 13 + PyTorch + the SGLang runtime preinstalled.
+    # First boot also installs "python[diffusion]" extras — see entrypoint.
+    image: lmsysorg/sglang:v0.5.20-cu130
+    platform: linux/amd64          # pin x86_64; default manifest picks arm64
+    container_name: qwen-image-sglang
+    restart: unless-stopped
+    ports:
+      - "30010:30010"             # main HTTP server
+      - "30011:30011"             # OpenAI-compatible API docs / UI
+    volumes:
+      - ./models/Qwen-Image-2.1:/models/Qwen-Image-2.1:ro
+      - ./output:/output:rw
+      - ./cache:/root/.cache/huggingface:rw
+      - ./sglang-entrypoint.sh:/sglang-entrypoint.sh:ro
+    environment:
+      NVIDIA_VISIBLE_DEVICES: "0"
+      HF_HUB_DISABLE_TELEMETRY: "1"
+      TRANSFORMERS_OFFLINE: "1"
+      SGLANG_DISABLE_VERSION_CHECK: "1"
+    entrypoint: ["/bin/bash", "/sglang-entrypoint.sh"]
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - capabilities: ["gpu"]
+              count: 1
+              driver: nvidia
+    shm_size: "16g"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:30010/health || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 30
+      start_period: 300s   # diffusion install can take 5–10 min on first boot
+```
+
+**`sglang-entrypoint.sh`** (in the same directory):
+
+```bash
+#!/bin/bash
+# Container entrypoint for SGLang Diffusion serving Qwen-Image 2.1.
+# RTX 3090 / 4090 24 GB recipe: layerwise offload + memory performance mode.
+set -uo pipefail
+
+GCC_SENTINEL="/root/.gcc-installed"
+DIFF_SENTINEL="/root/.diffusion-installed"
+MODEL_PATH="/models/Qwen-Image-2.1"
+OUTPUT_DIR="/output"
+
+mkdir -p "$OUTPUT_DIR"
+echo "[entrypoint] $(date -Iseconds) — starting sglang diffusion server"
+
+# Verify the model layout
+if [[ ! -f "$MODEL_PATH/model_index.json" ]]; then
+  echo "[entrypoint] FATAL: model_index.json not found in $MODEL_PATH"
+  ls -la "$MODEL_PATH" 2>/dev/null || true
+  exit 1
+fi
+
+# Triton JIT may need gcc at runtime
+if [[ ! -f "$GCC_SENTINEL" ]]; then
+  if ! command -v gcc >/dev/null 2>&1; then
+    echo "[entrypoint] Installing gcc (Triton JIT requires it)"
+    apt-get update -qq && apt-get install -y --no-install-recommends gcc
+  fi
+  touch "$GCC_SENTINEL"
+fi
+
+# Install diffusion extras on first boot (5–10 min)
+if [[ ! -f "$DIFF_SENTINEL" ]]; then
+  echo "[entrypoint] Installing sglang[diffusion] extras (one-time)…"
+  pip install --upgrade pip setuptools wheel
+  cd /root
+  [[ -d sglang ]] || git clone --depth 1 https://github.com/sgl-project/sglang.git
+  cd /root/sglang
+  pip install -e "python[diffusion]"
+  touch "$DIFF_SENTINEL"
+fi
+
+# Boot sglang serve with the 24 GB recipe
+cd /root
+exec python3 -m sglang.multimodal_gen.runtime.entrypoints.cli.main serve \
+  --model-path "$MODEL_PATH" \
+  --model-id Qwen-Image-2.1 \
+  --num-gpus 1 \
+  --host 0.0.0.0 --port 30010 \
+  --attention-backend fa \
+  --performance-mode memory \
+  --layerwise-offload-components dit,text_encoder \
+  --dit-offload-prefetch-size 1 \
+  --dit-layerwise-resident-layers 0 \
+  --enable-torch-compile false \
+  --output-path "$OUTPUT_DIR"
+```
+
+Why these specific flags:
+
+- `--attention-backend fa` — FlashAttention 2. Compatible with RTX 30xx;
+  torch SDPA fails on this model.
+- `--performance-mode memory` — preferring low VRAM over raw speed.
+- `--layerwise-offload-components dit,text_encoder` — stream the DiT and text
+  encoder from CPU to GPU per layer. **Without this you OOM at 1024×1024 on a
+  24 GB card.**
+- `--dit-offload-prefetch-size 1` and `--dit-layerwise-resident-layers 0` —
+  minimum-residence tuning so VRAM is freed aggressively.
+- `--enable-torch-compile false` — saves ~2 minutes of startup and a chunk of
+  VRAM, with little perceptible quality cost on consumer cards.
+
+Bring it up:
+
+```bash
+docker compose up -d sglang-diffusion
+# Tail the logs until you see "Application startup complete" (~5 min)
+docker compose logs -f sglang-diffusion
+# Sanity check
+curl -sS http://localhost:30010/health
+# {"status":"ok"}
+```
+
+### 3. Add `qwen-studio` (this repo) to the same compose file
+
+Drop this service into the same `docker-compose.yml`:
+
+```yaml
+  qwen-studio:
+    build: ./qwen-studio            # clone this repo to ./qwen-studio
+    container_name: qwen-studio
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    environment:
+      BRAIN_URL: "http://qwen-image-sglang:30010"
+      MAX_CONCURRENT_GENERATIONS: "1"
+      THUMB_QUALITY: "78"
+    volumes:
+      - ./qwen-studio/data:/app/data:rw   # persists history across restarts
+    depends_on:
+      sglang-diffusion:
+        condition: service_healthy
 ```
 
 Then:
@@ -208,8 +385,22 @@ docker compose up -d qwen-studio
 # open http://localhost:8000
 ```
 
-The brain (`qwen-image-sglang`) container is unchanged — this repo only
-replaces the previous Streamlit dashboard.
+The compose service name `qwen-image-sglang` is reachable on
+`http://qwen-image-sglang:30010` from inside the network — that's what
+`BRAIN_URL` resolves to.
+
+### 4. Or run qwen-studio on the host (no container)
+
+```bash
+git clone https://github.com/coldloki/qwen-image-2.1-local-dashboard.git
+cd qwen-image-2.1-local-dashboard
+pip install -r requirements.txt
+BRAIN_URL=http://localhost:30010 python -m uvicorn server:app --host 0.0.0.0 --port 8000
+# open http://localhost:8000
+```
+
+The brain always runs in a container — it needs the NVIDIA runtime + 16 GB
+shm. Only the web tier can run on the host.
 
 ---
 
@@ -225,6 +416,26 @@ python tests/test_mobile.py     # Mobile-viewport smoke, ~5 s
 `PLAYWRIGHT_BROWSERS_PATH` to a directory containing chromium-1228 or
 newer if the default cache misses. Screenshots land in
 `tests/artifacts/`.
+
+---
+
+## License & credits
+
+MIT — see [`LICENSE`](LICENSE). You can copy, modify, and redistribute this
+code (including for commercial purposes) as long as the copyright notice is
+preserved. Contributions back are welcome but not required.
+
+Built on:
+
+- [SGLang Diffusion](https://github.com/sgl-project/sglang) (Apache 2.0) — the
+  inference server that loads and runs Qwen-Image.
+- [FastAPI](https://fastapi.tiangolo.com/) (MIT), [uvicorn](https://www.uvicorn.org/)
+  (BSD), [httpx](https://www.python-httpx.org/) (BSD), [Pillow](https://python-pillow.org/)
+  (HPND), SQLite (public domain).
+- [Heroicons](https://heroicons.com/) v2 outline icons (MIT) — bundled in
+  `static/icons/sprite.svg`.
+- The `Qwen/Qwen-Image-2.1` model weights themselves are governed by the
+  upstream model license; review it before any redistribution.
 
 ---
 
