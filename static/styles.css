@@ -395,10 +395,49 @@ input[type=range]:disabled { opacity: 0.4; cursor: not-allowed; }
   gap: 0.35rem;
   font-size: 0.78rem;
   color: var(--muted);
-  margin: 0.3rem 0 0;
+  margin: 0.6rem 0 0;
   cursor: pointer;
 }
 .seed-random-toggle input { accent-color: var(--accent); }
+
+/* Seed input: a clean, typeable number field. Disabled state when
+   "Random each time" is checked — the field shows the placeholder
+   "random" and greyed out. Enabled state lets the user type any
+   exact seed for reproducibility. */
+.seed-input {
+  width: 100%;
+  padding: 0.55rem 0.7rem;
+  margin-top: 0.4rem;
+  font-size: 0.95rem;
+  font-variant-numeric: tabular-nums;
+  font-family: inherit;
+  background: var(--bg-3);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--fg);
+  /* Hide the native spinners — we don't want accidental clicks to
+     bump the seed by ±1. */
+  -moz-appearance: textfield;
+  appearance: textfield;
+}
+.seed-input::-webkit-outer-spin-button,
+.seed-input::-webkit-inner-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+.seed-input:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 25%, transparent);
+}
+.seed-input:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+  background: var(--bg-2);
+}
+.seed-input::placeholder {
+  color: var(--muted);
+}
 
 /* ========== Generate tab ========== */
 

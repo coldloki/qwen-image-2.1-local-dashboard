@@ -155,16 +155,14 @@ export async function render(root) {
             </div>
           </div>
 
-          <div class="slider-wrap">
+          <div class="slider-wrap seed-wrap">
             <div class="slider-label-row">
               <label for="seed">
                 Seed
-                <span class="hint" title="Random seed for reproducibility. -1 (or empty) = a new random seed each generation.">?</span>
+                <span class="hint" title="Random seed for reproducibility. 'random' = a new seed each generation. Type any non-negative integer to lock the seed.">?</span>
               </label>
-              <span class="slider-value" id="seed-val">${initSeed < 0 ? 'random' : initSeed}</span>
             </div>
-            <input type="range" id="seed" min="-1" max="999999999" step="1" value="${initSeed}">
-            <div class="slider-ticks"><span>−1</span><span>5×10⁵</span><span>10⁹</span></div>
+            <input type="number" id="seed" class="seed-input" min="0" max="999999999" step="1" placeholder="random" value="${initSeed < 0 ? '' : initSeed}" autocomplete="off">
             <label class="seed-random-toggle">
               <input type="checkbox" id="seed-random" ${initSeed < 0 ? 'checked' : ''}>
               Random each time
@@ -239,14 +237,25 @@ export async function render(root) {
     );
   }
   const paintSeed = () => {
-    const v = parseInt(seedEl.value, 10);
-    paintBadge('seed-val', seedRandom.checked || v < 0 ? 'random' : v);
+    // Number input. Empty input + checkbox checked = "random" (we
+    // send -1 to the brain in that case). Empty input + checkbox
+    // unchecked = also "random" (the brain treats -1 as random).
+    // Non-empty input + checkbox unchecked = that exact seed.
+    if (seedRandom.checked) {
+      seedEl.value = '';
+      seedEl.disabled = true;
+    } else {
+      seedEl.disabled = false;
+    }
   };
-  seedEl.addEventListener('input', paintSeed);
-  seedRandom.addEventListener('change', () => {
-    if (seedRandom.checked) seedEl.value = -1;
-    paintSeed();
+  seedEl.addEventListener('input', () => {
+    // If user types a number, auto-uncheck "Random each time".
+    if (seedEl.value !== '' && seedRandom.checked) {
+      seedRandom.checked = false;
+    }
   });
+  seedRandom.addEventListener('change', paintSeed);
+  paintSeed();
 
   // Preset select wiring
   const presetSelect = document.getElementById('preset-select');
@@ -262,10 +271,14 @@ export async function render(root) {
           document.getElementById('steps-val').textContent = p.steps;
         }
         if (p.seed != null) {
-          document.getElementById('seed').value = p.seed;
           const random = p.seed < 0;
-          document.getElementById('seed-random').checked = random;
-          document.getElementById('seed-val').textContent = random ? 'random' : p.seed;
+          const seedInput = document.getElementById('seed');
+          const randomCb = document.getElementById('seed-random');
+          if (randomCb) randomCb.checked = random;
+          if (seedInput) {
+            seedInput.value = random ? '' : p.seed;
+            seedInput.disabled = random;
+          }
         }
         toast(`Loaded preset "${name}"`, 'success');
       }
@@ -286,13 +299,14 @@ export async function render(root) {
     const promptVal = document.getElementById('prompt').value.trim();
     if (!promptVal) { toast('Prompt is required', 'error'); return; }
 
+    const seedRaw = document.getElementById('seed').value;
     const req = {
       prompt: promptVal,
       negative: document.getElementById('negative').value,
       size: document.getElementById('size').value,
       steps: parseInt(document.getElementById('steps').value, 10),
       guidance: parseFloat(document.getElementById('guidance').value),
-      seed: parseInt(document.getElementById('seed').value, 10),
+      seed: seedRaw === '' ? -1 : parseInt(seedRaw, 10),
       output_format: document.getElementById('format').value,
       true_cfg_scale: parseFloat(document.getElementById('true-cfg').value),
       enable_teacache: document.getElementById('teacache').checked,
