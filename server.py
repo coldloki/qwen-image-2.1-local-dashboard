@@ -1061,15 +1061,22 @@ async def upscale(req: UpscaleRequest, request: Request):
     `upscaling_scale: req.scale`. SSE stream of progress events.
     The result is persisted as a new history row with
     `kind='upscale'` and `parent_id=<source>`.
+
+    Note on the brain: in sglang 0.5.20cu130, enable_upscaling
+    triggers a known bug -- the upscaler receives a 16-channel latent
+    instead of decoded RGB and crashes. The /api/upscale code path
+    is complete; until the upstream fix, requests return brain
+    HTTP 500 at the final 'upscaling' phase after the diffusion
+    itself runs fine.
     """
-    # Look up the source row first — we need its prompt, negative,
+    # Look up the source row first - we need its prompt, negative,
     # width, height before we can claim a slot. We don't claim the
     # slot until after this lookup so a bad history_id returns 404
     # without burning the in-flight budget.
     conn = db()
     try:
         src = conn.execute(
-            "SELECT id, prompt, negative, width, height, output_format "
+            "SELECT id, prompt, negative, width, height, output_format, filename "
             "FROM history WHERE id = ?", (req.history_id,)
         ).fetchone()
     finally:
@@ -1080,7 +1087,7 @@ async def upscale(req: UpscaleRequest, request: Request):
             content={"error": f"history_id not found: {req.history_id}"},
         )
     src_path = IMAGES_DIR / _row_filename(src)
-    if not src_path.exists():
+    if not src_path.is_file():
         return JSONResponse(
             status_code=404,
             content={"error": f"source file missing on disk: {req.history_id}"},
@@ -1249,6 +1256,8 @@ async def upscale(req: UpscaleRequest, request: Request):
             if rid in _GEN_ACTIVE:
                 _GEN_ACTIVE[rid]["finished"] = True
                 _GEN_ACTIVE[rid]["finished_at"] = time.time()
+
+    return StreamingResponse(event_stream(), media_type="text/event-stream")
 
 
 def _row_filename(row) -> str:
