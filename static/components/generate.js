@@ -27,6 +27,9 @@ export async function render(root) {
   const prompt = last ? JSON.parse(last).prompt : '';
   const neg = last ? JSON.parse(last).negative : '';
   const size = settings.default_size || '1024x1024';
+  // Add two panoramic options to the dropdown. The model handles 3:1
+  // ratios fine; anything more extreme starts to distort.
+  const allSizes = ['1024x1024','1280x720','720x1280','1536x1024','1024x1536','1920x768','2048x512','768x768','512x512'];
   const steps = parseInt(settings.default_steps || '28', 10);
   const guidance = parseFloat(settings.default_guidance || '4.0');
   const seed = parseInt(settings.default_seed || '-1', 10);
@@ -113,10 +116,7 @@ export async function render(root) {
             <div class="field">
               <label for="size">Size</label>
               <select id="size">
-                ${fillSelect(
-                  ['1024x1024','1280x720','720x1280','1536x1024','1024x1536','768x768','512x512'],
-                  initSize,
-                )}
+                ${fillSelect(allSizes, initSize)}
               </select>
             </div>
             <div class="field">
@@ -313,9 +313,15 @@ export async function render(root) {
     const btn = document.getElementById('submit-btn');
     btn.innerHTML = `${icon('x-mark', { size: 16 })}<span>Cancel</span>`;
     btn.classList.add('cancel');
-    document.getElementById('progress-area').hidden = false;
-    document.getElementById('progress-fill').style.width = '0%';
-    document.getElementById('progress-info').textContent = 'Starting…';
+    // Clear any leftover running banner from a previous in-flight generation.
+    if (_runningPollHandle) { clearInterval(_runningPollHandle); _runningPollHandle = null; }
+    _runningBannerEl = null;
+    const progressArea = document.getElementById('progress-area');
+    progressArea.hidden = false;
+    progressArea.innerHTML = `
+      <div class="progress-bar"><div class="progress-fill" id="progress-fill" style="width:0%"></div></div>
+      <div class="progress-info" id="progress-info">Starting…</div>
+    `;
     const t0 = performance.now();
 
     function paintStatus(phase, msg) {
@@ -363,6 +369,99 @@ export async function render(root) {
       btn.innerHTML = `${icon('sparkles', { size: 16 })}<span>Generate</span>`;
     }
   });
+
+  // ----- Resume on remount ---------------------------------------------
+  // If a generation was running when the user navigated away (or
+  // finished while they were on another tab), pick it up. The brain
+  // request keeps running server-side; we just need to display the
+  // banner / auto-load the result.
+  try {
+    const { active } = await api.get('/api/generate/active');
+    if (!active) return;
+    const age = active.age || 0;
+    const finished = active.finished;
+    const imageIds = active.result_image_ids || [];
+    if (finished && imageIds.length > 0) {
+      // Auto-load the result that landed while we were away.
+      const entries = (await Promise.all(imageIds.map(_hydrateEntry))).filter(Boolean);
+      if (entries.length > 0) {
+        lastResults = entries;
+        renderResults(entries);
+        toast(`Loaded ${entries.length} image(s) that finished while you were away`, 'success', { duration: 2500 });
+      }
+    } else if (!finished) {
+      // Still running — show a banner + poll until done.
+      _showRunningBanner(active);
+    }
+  } catch (e) {
+    // Best-effort; if /api/generate/active isn't reachable the user
+    // just won't see a resume banner.
+    console.warn('generate: failed to fetch active generation', e);
+  }
+}
+
+// Build a result-card-shaped entry from just an image id, by fetching
+// the full history row from the server.
+async function _hydrateEntry(imageId) {
+  try {
+    const all = await api.get('/api/history', { limit: 200 });
+    return all.find(r => r.id === imageId) || null;
+  } catch {
+    return null;
+  }
+}
+
+let _runningBannerEl = null;
+let _runningPollHandle = null;
+
+function _showRunningBanner(active) {
+  if (_runningBannerEl) return; // already shown
+  const area = document.getElementById('progress-area');
+  if (!area) return;
+  // Reuse the existing progress bar container so styling is consistent.
+  area.hidden = false;
+  area.innerHTML = `
+    <div class="running-banner">
+      <div class="running-banner-text">
+        <strong>Generation running in background</strong>
+        <span class="running-banner-sub">${escape(active.prompt.slice(0, 80))}${active.prompt.length > 80 ? '…' : ''}</span>
+      </div>
+      <span class="running-banner-elapsed" id="running-elapsed">${active.age.toFixed(1)}s</span>
+    </div>
+  `;
+  _runningBannerEl = area;
+
+  // Poll /api/generate/active every 1.5s. When it reports finished,
+  // swap the banner for the actual result.
+  _runningPollHandle = setInterval(async () => {
+    try {
+      const { active: latest } = await api.get('/api/generate/active');
+      if (!latest || !latest.finished) {
+        const el = document.getElementById('running-elapsed');
+        if (el && latest) el.textContent = latest.age.toFixed(1) + 's';
+        return;
+      }
+      clearInterval(_runningPollHandle);
+      _runningPollHandle = null;
+      _runningBannerEl = null;
+      area.hidden = true;
+      area.innerHTML = `
+        <div class="progress-bar"><div class="progress-fill" id="progress-fill" style="width:100%"></div></div>
+        <div class="progress-info" id="progress-info">done</div>
+      `;
+      const ids = latest.result_image_ids || [];
+      if (ids.length > 0) {
+        const entries = (await Promise.all(ids.map(_hydrateEntry))).filter(Boolean);
+        if (entries.length > 0) {
+          lastResults = entries;
+          renderResults(entries);
+          toast(`Generation finished — ${entries.length} image(s)`, 'success', { duration: 2500 });
+        }
+      }
+    } catch (e) {
+      console.warn('generate: active poll failed', e);
+    }
+  }, 1500);
 }
 
 let lastResults = [];

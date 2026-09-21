@@ -91,6 +91,22 @@ THUMB_QUALITY = int(os.environ.get("THUMB_QUALITY", "78"))
 # Retry-After hint.
 _GEN_LOCK = asyncio.Lock()
 _GEN_IN_FLIGHT: dict[str, float] = {}  # rid -> started_at (monotonic seconds)
+# Detailed per-generation state. Lets the Generate tab pick up a result
+# that finished while the user was navigating to History, AND survive
+# in-app navigation without killing the brain request.
+# Shape:
+#   rid: {
+#     "started_at": float,        # monotonic seconds (brain-side)
+#     "wall_started_at": float,   # unix time.time() — for elapsed display
+#     "prompt": str, "negative": str,
+#     "size": str, "steps": int, "guidance": float, "seed": int,
+#     "format": str, "n": int,
+#     "phase": str, "progress": float,  # last SSE values
+#     "result_image_ids": list[str],   # populated on success
+#     "error": str | None,
+#     "finished": bool, "finished_at": float | None,
+#   }
+_GEN_ACTIVE: dict[str, dict] = {}
 _GEN_MAX = int(os.environ.get("MAX_CONCURRENT_GENERATIONS", "1"))
 
 for d in (DATA_DIR, IMAGES_DIR, THUMBS_DIR):
@@ -348,7 +364,15 @@ app.add_middleware(NoCacheStaticMiddleware)
 
 def _html_response(body: str):
     from starlette.responses import Response
-    return Response(content=body, media_type="text/html")
+    return Response(
+        content=body,
+        media_type="text/html",
+        # No-cache: the index.html itself carries no version stamp —
+        # its JS/CSS modules carry ?v=<git-sha>. Forcing the browser
+        # (and any proxy like Tailscale) to revalidate prevents serving
+        # a stale shell that points at deleted modules after a deploy.
+        headers={"Cache-Control": "no-cache, no-store, must-revalidate"},
+    )
 
 
 @app.get("/")
@@ -473,6 +497,55 @@ async def generate_status() -> dict:
     }
 
 
+@app.get("/api/generate/active")
+async def generate_active() -> dict:
+    """Snapshot of the most recent in-flight OR just-finished generation,
+    so a remount of the Generate tab can pick up where it left off.
+
+    Strategy: surface the most recent rid in _GEN_ACTIVE regardless of
+    whether it's still running or has finished in the last 60 seconds.
+    The client decides what to do (banner vs. autoload result).
+    """
+    import time as _t
+    now = _t.time()
+    async with _GEN_LOCK:
+        if not _GEN_ACTIVE:
+            return {"active": None}
+        # Most recent entry — finished OR running. We don't drop finished
+        # entries immediately so a client that briefly navigated away can
+        # still see the result. Server cleans them up after 60s.
+        rid = max(_GEN_ACTIVE, key=lambda r: _GEN_ACTIVE[r]["wall_started_at"])
+        entry = dict(_GEN_ACTIVE[rid])  # shallow copy
+    age = now - entry["wall_started_at"]
+    # Prune old finished entries (kept around briefly for pickup).
+    async with _GEN_LOCK:
+        stale = [r for r, e in _GEN_ACTIVE.items()
+                 if e.get("finished") and e.get("finished_at")
+                 and now - e["finished_at"] > 60]
+        for r in stale:
+            _GEN_ACTIVE.pop(r, None)
+    return {
+        "active": {
+            "rid": rid,
+            "wall_started_at": entry["wall_started_at"],
+            "age": round(age, 2),
+            "prompt": entry.get("prompt", ""),
+            "negative": entry.get("negative", ""),
+            "size": entry.get("size", ""),
+            "steps": entry.get("steps", 0),
+            "guidance": entry.get("guidance", 0.0),
+            "seed": entry.get("seed", -1),
+            "format": entry.get("format", "png"),
+            "n": entry.get("n", 1),
+            "phase": entry.get("phase", ""),
+            "progress": entry.get("progress", 0.0),
+            "finished": entry.get("finished", False),
+            "error": entry.get("error"),
+            "result_image_ids": list(entry.get("result_image_ids", [])),
+        }
+    }
+
+
 @app.post("/api/generate", response_model=None)
 async def generate(req: GenerateRequest, request: Request):
     """Proxy to brain, persist result, stream SSE progress.
@@ -505,6 +578,26 @@ async def generate(req: GenerateRequest, request: Request):
         # Reserve a slot for this request.
         _GEN_IN_FLIGHT[rid] = time.time()
         request.state.gen_rid = rid
+        # Seed the active-state record so /api/generate/active can show
+        # progress + handle remounts that arrive mid-generation.
+        _GEN_ACTIVE[rid] = {
+            "started_at": time.monotonic(),
+            "wall_started_at": time.time(),
+            "prompt": req.prompt,
+            "negative": req.negative,
+            "size": req.size,
+            "steps": req.steps,
+            "guidance": req.guidance,
+            "seed": req.seed,
+            "format": req.output_format,
+            "n": req.n,
+            "phase": "queued",
+            "progress": 0.0,
+            "result_image_ids": [],
+            "error": None,
+            "finished": False,
+            "finished_at": None,
+        }
 
     server_url = _get_setting("server_url", BRAIN_URL)
     payload = {
@@ -557,140 +650,59 @@ async def generate(req: GenerateRequest, request: Request):
         stop = asyncio.Event()
         tick_task = asyncio.create_task(pump_ticks(stop))
 
+        # Run the brain call + persistence in a SEPARATE task. This is
+        # the key to surviving client disconnects: when uvicorn tears
+        # down the SSE generator, GeneratorExit propagates through the
+        # generator — but the brain_task is independent and continues
+        # to completion. It persists the result to disk + DB +
+        # _GEN_ACTIVE so the client can pick it up via
+        # /api/generate/active on remount.
+        brain_task = asyncio.create_task(
+            _run_brain_and_persist(
+                rid=rid,
+                req=req,
+                payload=payload,
+                server_url=server_url,
+                queue=queue,
+                stop=stop,
+                t0=t0,
+            )
+        )
+
         try:
-            async with httpx.AsyncClient(timeout=httpx.Timeout(600.0, connect=10.0)) as c:
-                # first progress tick at ~0s
-                await queue.put(_sse({
-                    "phase": "denoising", "msg": f"Running {req.steps} steps…",
-                    "elapsed": 0.0,
-                }))
-                resp_task = asyncio.create_task(c.post(
-                    f"{server_url.rstrip('/')}/v1/images/generations",
-                    json=payload,
-                ))
-
-                # Drain ticks while waiting for response.
-                # As soon as the response arrives, stop ticking and drain.
-                # Also poll for client disconnect so a closed browser tab
-                # doesn't keep the brain doing wasted GPU work.
-                while not resp_task.done():
-                    if await request.is_disconnected():
-                        resp_task.cancel()
-                        print(f"[generate] client disconnected — cancelling brain request rid={rid}")
-                        return
-                    try:
-                        msg = await asyncio.wait_for(queue.get(), timeout=0.5)
+            # Forward queued events to the SSE consumer. When the
+            # brain task completes (or the consumer disconnects), we
+            # stop yielding.
+            while True:
+                try:
+                    msg = await asyncio.wait_for(queue.get(), timeout=0.5)
+                    if msg:
+                        # Mirror every tick into _GEN_ACTIVE so a
+                        # client that remounts mid-flight sees fresh
+                        # phase + progress values without polling.
+                        _mirror_tick_into_active(rid, msg)
                         yield msg
-                    except asyncio.TimeoutError:
-                        pass
-                # Stop pumping ticks FIRST so no new items appear,
-                # then drain what was queued before stopping.
-                stop.set()
-                try:
-                    await asyncio.wait_for(tick_task, timeout=1.5)
-                except (asyncio.TimeoutError, asyncio.CancelledError):
-                    pass
-                while not queue.empty():
-                    try:
-                        msg = queue.get_nowait()
-                        if msg:
-                            yield msg
-                    except asyncio.QueueEmpty:
+                except asyncio.TimeoutError:
+                    if brain_task.done():
+                        # Drain any final items the brain task queued
+                        # right before completing.
+                        while not queue.empty():
+                            msg = queue.get_nowait()
+                            if msg:
+                                _mirror_tick_into_active(rid, msg)
+                                yield msg
                         break
-
-                resp = await resp_task
-                if resp.status_code != 200:
-                    yield _sse({"error": f"brain HTTP {resp.status_code}: {resp.text[:300]}"})
-                    return
-                data = resp.json()
-                items = data.get("data") or []
-                if not items:
-                    yield _sse({"error": f"empty data in response: {json.dumps(data)[:300]}"})
-                    return
-
-                # Resolve raw bytes for every image. Brain returns either
-                # b64_json directly or a relative URL/path we must follow.
-                async with httpx.AsyncClient(timeout=60) as cli:
-                    raw_list: list[bytes] = []
-                    for item in items:
-                        b64 = item.get("b64_json") or item.get("base64")
-                        if not b64:
-                            url_or_path = item.get("url") or item.get("file_path")
-                            if url_or_path:
-                                if url_or_path.startswith("/"):
-                                    full = BRAIN_URL.rstrip("/") + url_or_path
-                                elif url_or_path.startswith("output/"):
-                                    full = BRAIN_URL.rstrip("/") + "/" + url_or_path
-                                else:
-                                    full = url_or_path
-                                r2 = await cli.get(full)
-                                r2.raise_for_status()
-                                b64 = base64.b64encode(r2.content).decode("ascii")
-                        if not b64:
-                            yield _sse({"error": f"no image bytes in item: {json.dumps(item)[:200]}"})
-                            return
-                        raw_list.append(base64.b64decode(b64))
-
-                elapsed = time.time() - t0
-                ext = _ext_for(req.output_format)
-                from datetime import datetime
-                now_iso = datetime.utcnow().isoformat(timespec="seconds")
-
-                # Persist N rows. One row per image — same pattern as the
-                # single-image path so history/download/lightbox keep
-                # working without modification.
-                image_ids: list[str] = []
-                conn = db()
-                try:
-                    for raw in raw_list:
-                        with Image.open(io.BytesIO(raw)) as im:
-                            w, h = im.size
-                            has_alpha = _has_real_alpha(im)
-                        image_id, path = _save_original(raw, ext)
-                        thumb_path = THUMBS_DIR / f"{image_id}.webp"
-                        try:
-                            _make_thumb(path, thumb_path)
-                        except Exception as e:
-                            print(f"[thumb] {image_id}: {e}", file=sys.stderr)
-                        conn.execute(
-                            """INSERT INTO history
-                               (id, ts, prompt, negative, width, height, steps, guidance,
-                                seed, output_format, filename, elapsed_s, size_bytes,
-                                has_alpha)
-                               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                            (
-                                image_id,
-                                now_iso,
-                                req.prompt,
-                                req.negative,
-                                w, h, req.steps, req.guidance,
-                                None if req.seed < 0 else req.seed,
-                                req.output_format,
-                                path.name,
-                                round(elapsed, 2),
-                                len(raw),
-                                1 if has_alpha else 0,
-                            ),
-                        )
-                        image_ids.append(image_id)
-                    conn.commit()
-                finally:
-                    conn.close()
-                # Now that rows are committed, build entries for the SSE payload.
-                entries = [_build_entry(iid) for iid in image_ids]
-                yield _sse({"progress": 1.0, "elapsed": round(elapsed, 1), "phase": "done"})
-                # Announce every image so the UI can refresh. Backwards
-                # compat: single-image clients still see one result event.
-                for entry in entries:
-                    yield _sse({"result": entry})
-        except httpx.RequestError as e:
-            yield _sse({"error": f"brain unreachable: {type(e).__name__}: {e}"})
         finally:
             # Release the concurrency slot — must happen on every code
-            # path (success, error, client disconnect) or the slot will
-            # stay reserved forever.
+            # path (success, error, client disconnect) or the slot
+            # stays reserved forever. The brain task may still be
+            # running if the consumer disconnected early; that's fine,
+            # it owns its own _GEN_ACTIVE cleanup.
             async with _GEN_LOCK:
                 _GEN_IN_FLIGHT.pop(request.state.gen_rid, None)
+            # Cancel the tick pump; it isn't useful once we're done
+            # draining.
+            tick_task.cancel()
 
     return StreamingResponse(event_stream(), media_type="text/event-stream")
 
@@ -706,6 +718,193 @@ def _build_entry(image_id: str) -> dict:
 
 def _sse(obj: dict) -> str:
     return f"data: {json.dumps(obj)}\n\n"
+
+
+def _mirror_tick_into_active(rid: str, msg: str) -> None:
+    """Parse an SSE 'data:' line and update _GEN_ACTIVE[rid] with the
+    latest phase/progress so a remounting client sees fresh state."""
+    if not msg.startswith("data:"):
+        return
+    try:
+        evt = json.loads(msg[len("data:"):].strip())
+    except Exception:
+        return
+    entry = _GEN_ACTIVE.get(rid)
+    if entry is None:
+        return
+    if "phase" in evt:
+        entry["phase"] = evt["phase"]
+    if "progress" in evt:
+        try:
+            entry["progress"] = float(evt["progress"])
+        except (TypeError, ValueError):
+            pass
+
+
+async def _run_brain_and_persist(
+    *,
+    rid: str,
+    req,
+    payload: dict,
+    server_url: str,
+    queue: asyncio.Queue,
+    stop: asyncio.Event,
+    t0: float,
+) -> None:
+    """Call the brain, persist results, update _GEN_ACTIVE.
+
+    Runs as an independent asyncio task — survives SSE consumer
+    disconnection because it is awaited by no one. The SSE generator
+    just drains the queue this task writes to, but if the consumer
+    goes away, the brain call and persistence continue regardless.
+    """
+    try:
+        await queue.put(_sse({
+            "phase": "denoising", "msg": f"Running {req.steps} steps…",
+            "elapsed": 0.0,
+        }))
+
+        async with httpx.AsyncClient(timeout=httpx.Timeout(600.0, connect=10.0)) as c:
+            try:
+                resp = await c.post(
+                    f"{server_url.rstrip('/')}/v1/images/generations",
+                    json=payload,
+                )
+            except httpx.RequestError as e:
+                err = f"brain unreachable: {type(e).__name__}: {e}"
+                await queue.put(_sse({"error": err}))
+                if rid in _GEN_ACTIVE:
+                    _GEN_ACTIVE[rid]["error"] = err
+                    _GEN_ACTIVE[rid]["finished"] = True
+                    _GEN_ACTIVE[rid]["finished_at"] = time.time()
+                return
+
+            if resp.status_code != 200:
+                err = f"brain HTTP {resp.status_code}: {resp.text[:300]}"
+                await queue.put(_sse({"error": err}))
+                if rid in _GEN_ACTIVE:
+                    _GEN_ACTIVE[rid]["error"] = err
+                    _GEN_ACTIVE[rid]["finished"] = True
+                    _GEN_ACTIVE[rid]["finished_at"] = time.time()
+                return
+
+            data = resp.json()
+            items = data.get("data") or []
+            if not items:
+                err = f"empty data in response: {json.dumps(data)[:300]}"
+                await queue.put(_sse({"error": err}))
+                if rid in _GEN_ACTIVE:
+                    _GEN_ACTIVE[rid]["error"] = err
+                    _GEN_ACTIVE[rid]["finished"] = True
+                    _GEN_ACTIVE[rid]["finished_at"] = time.time()
+                return
+
+            # Resolve raw bytes for every image. Brain returns either
+            # b64_json directly or a relative URL/path we must follow.
+            async with httpx.AsyncClient(timeout=60) as cli:
+                raw_list: list[bytes] = []
+                for item in items:
+                    b64 = item.get("b64_json") or item.get("base64")
+                    if not b64:
+                        url_or_path = item.get("url") or item.get("file_path")
+                        if url_or_path:
+                            if url_or_path.startswith("/"):
+                                full = BRAIN_URL.rstrip("/") + url_or_path
+                            elif url_or_path.startswith("output/"):
+                                full = BRAIN_URL.rstrip("/") + "/" + url_or_path
+                            else:
+                                full = url_or_path
+                            r2 = await cli.get(full)
+                            r2.raise_for_status()
+                            b64 = base64.b64encode(r2.content).decode("ascii")
+                    if not b64:
+                        err = f"no image bytes in item: {json.dumps(item)[:200]}"
+                        await queue.put(_sse({"error": err}))
+                        if rid in _GEN_ACTIVE:
+                            _GEN_ACTIVE[rid]["error"] = err
+                            _GEN_ACTIVE[rid]["finished"] = True
+                            _GEN_ACTIVE[rid]["finished_at"] = time.time()
+                        return
+                    raw_list.append(base64.b64decode(b64))
+
+        elapsed = time.time() - t0
+        ext = _ext_for(req.output_format)
+        from datetime import datetime
+        now_iso = datetime.utcnow().isoformat(timespec="seconds")
+
+        # Persist N rows. One row per image — same pattern as the
+        # single-image path so history/download/lightbox keep working
+        # without modification.
+        image_ids: list[str] = []
+        conn = db()
+        try:
+            for raw in raw_list:
+                with Image.open(io.BytesIO(raw)) as im:
+                    w, h = im.size
+                    has_alpha = _has_real_alpha(im)
+                image_id, path = _save_original(raw, ext)
+                thumb_path = THUMBS_DIR / f"{image_id}.webp"
+                try:
+                    _make_thumb(path, thumb_path)
+                except Exception as e:
+                    print(f"[thumb] {image_id}: {e}", file=sys.stderr)
+                conn.execute(
+                    """INSERT INTO history
+                       (id, ts, prompt, negative, width, height, steps, guidance,
+                        seed, output_format, filename, elapsed_s, size_bytes,
+                        has_alpha)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    (
+                        image_id,
+                        now_iso,
+                        req.prompt,
+                        req.negative,
+                        w, h, req.steps, req.guidance,
+                        None if req.seed < 0 else req.seed,
+                        req.output_format,
+                        path.name,
+                        round(elapsed, 2),
+                        len(raw),
+                        1 if has_alpha else 0,
+                    ),
+                )
+                image_ids.append(image_id)
+            conn.commit()
+        finally:
+            conn.close()
+
+        # Now that rows are committed, build entries for the SSE payload.
+        entries = [_build_entry(iid) for iid in image_ids]
+        await queue.put(_sse({
+            "progress": 1.0, "elapsed": round(elapsed, 1), "phase": "done",
+        }))
+        for entry in entries:
+            await queue.put(_sse({"result": entry}))
+
+        # Mark the active record finished so a remounting client can
+        # pick the result up even if it missed the SSE.
+        if rid in _GEN_ACTIVE:
+            _GEN_ACTIVE[rid]["result_image_ids"] = image_ids
+            _GEN_ACTIVE[rid]["phase"] = "done"
+            _GEN_ACTIVE[rid]["progress"] = 1.0
+            _GEN_ACTIVE[rid]["finished"] = True
+            _GEN_ACTIVE[rid]["finished_at"] = time.time()
+    except Exception as e:
+        # Catch-all so the active state always gets marked finished
+        # and a remounting client can see what happened.
+        err = f"{type(e).__name__}: {e}"
+        try:
+            await queue.put(_sse({"error": err}))
+        except Exception:
+            pass
+        if rid in _GEN_ACTIVE:
+            _GEN_ACTIVE[rid]["error"] = err
+            _GEN_ACTIVE[rid]["finished"] = True
+            _GEN_ACTIVE[rid]["finished_at"] = time.time()
+    finally:
+        # Stop the tick pump once we know the brain is done (success
+        # or failure).
+        stop.set()
 
 
 # ============================================================ History API
