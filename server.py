@@ -536,7 +536,13 @@ async def generate(req: GenerateRequest, request: Request):
 
                 # Drain ticks while waiting for response.
                 # As soon as the response arrives, stop ticking and drain.
+                # Also poll for client disconnect so a closed browser tab
+                # doesn't keep the brain doing wasted GPU work.
                 while not resp_task.done():
+                    if await request.is_disconnected():
+                        resp_task.cancel()
+                        print(f"[generate] client disconnected — cancelling brain request rid={rid}")
+                        return
                     try:
                         msg = await asyncio.wait_for(queue.get(), timeout=0.5)
                         yield msg
