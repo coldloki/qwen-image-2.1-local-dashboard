@@ -109,6 +109,10 @@ export async function render(root) {
             ${icon('arrow-path', { size: 15 })}
             <span>Re-roll</span>
           </button>
+          <button class="iconbtn" id="lb-upscale" title="Upscale this image">
+            ${icon('arrows-pointing-out', { size: 15 })}
+            <span>Upscale</span>
+          </button>
           <button class="iconbtn danger" id="lb-delete" title="Delete this image">
             ${icon('trash', { size: 15 })}
             <span>Delete</span>
@@ -173,6 +177,26 @@ function paint() {
   `;
   host.querySelectorAll('.tile').forEach((el, i) => {
     el.addEventListener('click', (e) => {
+      // Badge click — jump to the source entry's lightbox without
+      // opening this tile. stopPropagation so the tile click handler
+      // (which would open this tile's lightbox) doesn't fire.
+      const badge = e.target.closest('.tile-badge');
+      if (badge) {
+        e.stopPropagation();
+        const action = badge.dataset.action;
+        const it = view[i];
+        if (action === 'open-source' && it.parent_id) {
+          const idx = view.findIndex(x => x.id === it.parent_id);
+          if (idx >= 0) openLightbox(idx);
+          else toast('Source not in current view', 'info');
+        } else if (action === 'open-refs' && it.reference_image_ids) {
+          const first = it.reference_image_ids[0];
+          const idx = view.findIndex(x => x.id === first);
+          if (idx >= 0) openLightbox(idx);
+          else toast('Reference not in current view', 'info');
+        }
+        return;
+      }
       if (ui.selectMode) {
         toggleSelect(view[i].id);
         return;
@@ -256,9 +280,20 @@ function tileHtml(it, i) {
   // aspect-ratio from DB dimensions lets the JS layout pass compute
   // heights immediately, before the thumbnail bytes load.
   const ratio = (it.width && it.height) ? `${it.width} / ${it.height}` : '1 / 1';
+  // Lineage badge — shown for upscale derivatives and for entries
+  // that used reference images. Click jumps to the source/parents.
+  const badges = [];
+  if (it.kind === 'upscale') {
+    badges.push(`<span class="tile-badge upscale" data-id="${it.id}" data-action="open-source" title="Upscaled from ${it.parent_id?.slice(0,8) || '?'}">${icon('arrows-pointing-out', { size: 12 })} Upscaled</span>`);
+  }
+  if (it.reference_image_ids && it.reference_image_ids.length) {
+    const n = it.reference_image_ids.length;
+    badges.push(`<span class="tile-badge refs" data-id="${it.id}" data-action="open-refs" title="${n} reference image${n>1?'s':''}">${icon('paint-brush', { size: 12 })} ${n} ref${n>1?'s':''}</span>`);
+  }
   return `
     <div class="tile${alpha}${checked}${selectable}" data-i="${i}" data-id="${it.id}" style="aspect-ratio:${ratio}">
       <img src="${it.thumb_url}" alt="" loading="lazy">
+      ${badges.join('')}
       <span class="tile-check">${icon('check', { size: 14 })}</span>
     </div>
   `;
@@ -313,6 +348,12 @@ function bindLightbox() {
     }
     paint();
   });
+
+  document.getElementById('lb-upscale').addEventListener('click', () => {
+    if (activeIndex < 0) return;
+    openUpscaleModal(view[activeIndex]);
+  });
+
   dialog.addEventListener('click', (e) => {
     if (e.target === dialog) dialog.close();
   });
@@ -494,6 +535,108 @@ function reroll(it) {
   sessionStorage.setItem('gen:reroll', JSON.stringify(it));
   const generateLink = document.querySelector('[data-tab="generate"]');
   if (generateLink) generateLink.click();
+}
+
+
+// ============================================================ Upscale
+
+// Modal: choose 2x or 4x, show progress inline, close when done.
+function openUpscaleModal(item) {
+  const existing = document.getElementById('upscale-modal');
+  if (existing) existing.remove();
+  const m = document.createElement('dialog');
+  m.id = 'upscale-modal';
+  m.className = 'upscale-modal';
+  m.innerHTML = `
+    <h3>Upscale ${item.width}x${item.height} by…</h3>
+    <form method="dialog" id="upscale-form">
+      <label class="upscale-scale"><input type="radio" name="scale" value="2" checked> <span>2x</span></label>
+      <label class="upscale-scale"><input type="radio" name="scale" value="4"> <span>4x</span></label>
+      <div class="upscale-info">Brain-side Real-ESRGAN. Keeps the source prompt unless you change it below.</div>
+      <div class="upscale-status" id="upscale-status"></div>
+      <div class="upscale-actions">
+        <button type="button" id="upscale-cancel" class="iconbtn">Cancel</button>
+        <button type="button" id="upscale-go" class="iconbtn primary">Start upscale</button>
+      </div>
+    </form>
+  `;
+  document.body.appendChild(m);
+  const cancel = m.querySelector('#upscale-cancel');
+  const go = m.querySelector('#upscale-go');
+  const status = m.querySelector('#upscale-status');
+  cancel.addEventListener('click', () => m.close());
+  m.addEventListener('close', () => m.remove());
+  go.addEventListener('click', async () => {
+    const scale = parseInt(m.querySelector('input[name="scale"]:checked').value, 10);
+    go.disabled = true;
+    cancel.disabled = true;
+    status.innerHTML = '<div class="upscale-progress">' +
+      '<div class="progress-bar"><div class="progress-fill" id="up-fill" style="width:0%"></div></div>' +
+      '<div class="progress-info" id="up-info">Connecting…</div></div>';
+    try {
+      const resultId = await runUpscale(item.id, scale, (pct, msg) => {
+        const fill = document.getElementById('up-fill');
+        const info = document.getElementById('up-info');
+        if (fill) fill.style.width = `${Math.round(pct * 100)}%`;
+        if (info) info.textContent = msg;
+      });
+      if (resultId) {
+        toast(`Upscaled ${scale}x ready`, 'success');
+        // Refresh gallery so the new tile appears
+        window.dispatchEvent(new Event('history:invalidate'));
+        m.close();
+      } else {
+        status.innerHTML = '<div class="upscale-error">Upscale failed. See server log.</div>';
+        go.disabled = false; cancel.disabled = false;
+      }
+    } catch (e) {
+      status.innerHTML = `<div class="upscale-error">${escape(e.message || String(e))}</div>`;
+      go.disabled = false; cancel.disabled = false;
+    }
+  });
+  m.showModal();
+}
+
+// Stream SSE from /api/upscale. Returns the new history id on success,
+// null on brain failure. onProgress is called as (pct, msg) for each event.
+async function runUpscale(historyId, scale, onProgress) {
+  const r = await fetch('/api/upscale', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ history_id: historyId, scale }),
+  });
+  if (!r.ok) {
+    // Plain JSON error
+    let detail = '';
+    try { detail = (await r.json()).error || ''; } catch {}
+    onProgress(0, `Server error ${r.status}${detail ? ': ' + detail : ''}`);
+    throw new Error(detail || `HTTP ${r.status}`);
+  }
+  const reader = r.body.getReader();
+  const dec = new TextDecoder();
+  let buf = '';
+  let resultId = null;
+  while (true) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    buf += dec.decode(value, { stream: true });
+    let idx;
+    while ((idx = buf.indexOf('\n\n')) !== -1) {
+      const chunk = buf.slice(0, idx);
+      buf = buf.slice(idx + 4);
+      const line = chunk.split('\n').find(l => l.startsWith('data: '));
+      if (!line) continue;
+      try {
+        const evt = JSON.parse(line.slice(6));
+        if (evt.error) { onProgress(1, evt.error); return null; }
+        if (evt.progress != null) onProgress(evt.progress, evt.msg || `phase ${evt.phase || '...'} (${Math.round(evt.progress*100)}%)`);
+        if (evt.result_image_ids && evt.result_image_ids.length) {
+          resultId = evt.result_image_ids[0];
+        }
+      } catch {}
+    }
+  }
+  return resultId;
 }
 
 // External: when a new generation completes, refresh in the background.

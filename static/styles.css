@@ -1381,3 +1381,80 @@ dialog.lightbox .lb-actions .iconbtn.danger:hover {
 }
 .health-pill.ok    { border-color: var(--success); color: var(--success); }
 .health-pill.fail  { border-color: var(--danger);  color: var(--danger); }
+
+
+/* ===== Upscale modal ===== */
+dialog.upscale-modal {
+  width: min(420px, calc(100vw - 2rem));
+  padding: 1.25rem;
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  background: var(--surface);
+  color: var(--text);
+  box-shadow: 0 24px 60px rgba(0,0,0,0.4);
+}
+dialog.upscale-modal::backdrop { background: rgba(0,0,0,0.55); }
+dialog.upscale-modal h3 {
+  margin: 0 0 0.8rem;
+  font-size: 1.05rem;
+  font-weight: 600;
+}
+.upscale-scale {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  padding: 0.45rem 0.8rem;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  margin-right: 0.5rem;
+  margin-bottom: 0.7rem;
+  cursor: pointer;
+  font-size: 0.95rem;
+}
+.upscale-scale input { accent-color: var(--accent); }
+.upscale-info {
+  font-size: 0.78rem;
+  color: var(--muted);
+  margin-bottom: 0.7rem;
+  line-height: 1.4;
+}
+.upscale-status { margin: 0.6rem 0 0.8rem; min-height: 1.2rem; }
+.upscale-progress { display: flex; flex-direction: column; gap: 0.4rem; }
+.upscale-error {
+  color: var(--danger);
+  font-size: 0.85rem;
+  padding: 0.5rem 0.6rem;
+  background: rgba(231, 76, 60, 0.08);
+  border-radius: 8px;
+}
+.upscale-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 0.5rem;
+  margin-top: 0.4rem;
+}
+
+/* ===== Tile lineage badge ===== */
+.tile-badge {
+  position: absolute;
+  top: 0.5rem;
+  left: 0.5rem;
+  padding: 0.25rem 0.55rem;
+  border-radius: 999px;
+  background: rgba(0,0,0,0.65);
+  color: white;
+  font-size: 0.72rem;
+  font-weight: 500;
+  letter-spacing: 0.01em;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  cursor: pointer;
+  user-select: none;
+  border: 1px solid rgba(255,255,255,0.15);
+  backdrop-filter: blur(4px);
+}
+.tile-badge:hover { background: rgba(0,0,0,0.85); }
+.tile-badge svg { width: 12px; height: 12px; }
+.tile-badge.upscale   { border-color: var(--accent);  color: var(--accent); }
+.tile-badge.refs      { border-color: var(--accent-2); color: var(--accent-2); }
