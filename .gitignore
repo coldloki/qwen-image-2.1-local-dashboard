@@ -5,3 +5,4 @@ data/
 *.sqlite
 .venv/
 tests/artifacts/
+.env
