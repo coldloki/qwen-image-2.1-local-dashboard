@@ -39,7 +39,10 @@ async function activate(name) {
   for (const k of Object.keys(sections)) {
     sections[k].hidden = k !== name;
   }
-  if (!mounted[name]) {
+  // If we're activating Generate and a reroll target is pending,
+  // force a remount so consumeReroll() runs again with fresh data.
+  const forceRerender = name === 'generate' && sessionStorage.getItem('gen:reroll');
+  if (!mounted[name] || forceRerender) {
     mounted[name] = true;
     const mod = await loaders[name]();
     renderers[name] = mod.render;
@@ -62,25 +65,23 @@ window.addEventListener('hashchange', () => {
   if (sections[t]) activate(t);
 });
 
-// Theme toggle — icon + text label so users know exactly what the
-// click will do.
+// Theme toggle — icon only. The icon is the source of truth:
+//   dark mode  → show sun  (clicking switches to light)
+//   light mode → show moon (clicking switches to dark)
+// `title` and `aria-label` carry the same info for screen readers.
 const themeBtn = document.getElementById('theme-btn');
-const stored = localStorage.getItem('theme') || 'dark';
-document.documentElement.dataset.theme = stored;
-async function paintThemeBtn() {
-  const cur = document.documentElement.dataset.theme;
-  const isDark = cur === 'dark';
-  const { icon } = await loadIcons();
-  // When in dark mode we offer the *action* "Light mode" — show sun icon
-  // to hint the direction. When in light mode we offer "Dark mode" +
-  // moon icon. Icon is just a visual cue; the text is the source of truth.
-  themeBtn.innerHTML =
-    icon(isDark ? 'sun' : 'moon', { size: 16 }) +
-    `<span>${isDark ? 'Light mode' : 'Dark mode'}</span>`;
-  themeBtn.title = `Switch to ${isDark ? 'light' : 'dark'} theme`;
-  themeBtn.setAttribute('aria-label', themeBtn.title);
+const storedTheme = localStorage.getItem('theme') || 'dark';
+document.documentElement.dataset.theme = storedTheme;
+let _icon = null;
+loadIcons().then(mod => { _icon = mod.icon; paintThemeBtn(); });
+function paintThemeBtn() {
+  if (!_icon) return; // first paint is triggered when the import resolves
+  const isDark = document.documentElement.dataset.theme === 'dark';
+  const label = `Switch to ${isDark ? 'light' : 'dark'} theme`;
+  themeBtn.innerHTML = _icon(isDark ? 'sun' : 'moon', { size: 18 });
+  themeBtn.title = label;
+  themeBtn.setAttribute('aria-label', label);
 }
-paintThemeBtn();
 themeBtn.addEventListener('click', () => {
   const cur = document.documentElement.dataset.theme;
   const nxt = cur === 'dark' ? 'light' : 'dark';

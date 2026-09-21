@@ -117,9 +117,12 @@ function paintPresets() {
     const name = row.dataset.name;
     row.querySelector('[data-action=load]').addEventListener('click', () => {
       const p = presets.find(x => x.name === name);
-      // Hand the preset to generate.js via sessionStorage; include the
-      // prompt + any persisted steps/seed so the form re-hydrates with
-      // them. Then switch tabs.
+      // Hand the preset to generate.js via sessionStorage. Clear
+      // gen:last too so the explicit preset takes priority over the
+      // sticky "last generated" snapshot — otherwise a previous
+      // generation's prompt would win and the preset would appear
+      // to "do nothing".
+      sessionStorage.removeItem('gen:last');
       sessionStorage.setItem(
         'gen:reroll',
         JSON.stringify({
@@ -129,6 +132,9 @@ function paintPresets() {
           guidance: null,
           size: null,
           output_format: null,
+          // Mark as preset-load so generate.js knows to clear any
+          // sticky state and use these values verbatim.
+          source: 'preset',
         }),
       );
       const link = document.querySelector('[data-tab="generate"]');

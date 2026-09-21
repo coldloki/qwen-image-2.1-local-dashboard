@@ -127,16 +127,24 @@ export async function render(root) {
 function rebuildView() {
   const q = ui.query.trim().toLowerCase();
   view = items.filter(it => !q || (it.prompt || '').toLowerCase().includes(q));
+  // The server returns `ts` as an ISO 8601 string; parse it to a
+  // numeric epoch ms here so the comparator is robust against either
+  // a number or a string in the payload.
+  const ts = (it) => {
+    if (typeof it.ts_ms === 'number') return it.ts_ms;
+    const n = Date.parse(it.ts);
+    return Number.isFinite(n) ? n : 0;
+  };
   switch (ui.sort) {
     case 'oldest':
-      view.sort((a, b) => a.ts_ms - b.ts_ms);
+      view.sort((a, b) => ts(a) - ts(b));
       break;
     case 'biggest':
       view.sort((a, b) => (b.width * b.height) - (a.width * a.height));
       break;
     case 'newest':
     default:
-      view.sort((a, b) => b.ts_ms - a.ts_ms);
+      view.sort((a, b) => ts(b) - ts(a));
   }
 }
 

@@ -14,7 +14,16 @@ let lastResult = null;       // last successful generation (for reload)
 export async function render(root) {
   const settings = await api.get('/api/settings');
   presets = await api.get('/api/presets');
-  const last = sessionStorage.getItem('gen:last');
+
+  // Pick up any reroll target from the history/preset button. We
+  // read this FIRST so an explicit user action (load preset / reroll)
+  // overrides the sticky "last generated" snapshot.
+  const reroll = consumeReroll();
+
+  // Sticky "last generated" snapshot — used as the initial value when
+  // nothing else has set a target. We only honour this when there's
+  // no explicit reroll, otherwise the reroll silently loses.
+  const last = reroll ? null : sessionStorage.getItem('gen:last');
   const prompt = last ? JSON.parse(last).prompt : '';
   const neg = last ? JSON.parse(last).negative : '';
   const size = settings.default_size || '1024x1024';
@@ -23,23 +32,17 @@ export async function render(root) {
   const seed = parseInt(settings.default_seed || '-1', 10);
   const format = settings.default_format || 'png';
 
-  // Pick up any reroll target from the history tab.
-  const reroll = consumeReroll();
-  const rerollPrompt = reroll?.prompt || '';
-  const rerollNeg = reroll?.negative || '';
-  const rerollSize = reroll?.size;
-  const rerollSeed = reroll?.seed;
-  const rerollSteps = reroll?.steps;
-  const rerollGuidance = reroll?.guidance;
-  const rerollFormat = reroll?.output_format;
-
-  const initPrompt = prompt || rerollPrompt;
-  const initNeg = neg || rerollNeg;
-  const initSize = rerollSize || size;
-  const initSteps = rerollSteps ?? steps;
-  const initGuidance = rerollGuidance ?? guidance;
-  const initSeed = rerollSeed ?? seed;
-  const initFormat = rerollFormat || format;
+  const rerollPrompt = reroll?.prompt ?? '';
+  const rerollNeg = reroll?.negative ?? '';
+  // Only override the form when the reroll payload actually carries
+  // a value — null/undefined means "leave the default alone".
+  const initPrompt = reroll ? rerollPrompt : (prompt || '');
+  const initNeg = reroll ? rerollNeg : (neg || '');
+  const initSize = reroll?.size || size;
+  const initSteps = reroll?.steps ?? steps;
+  const initGuidance = reroll?.guidance ?? guidance;
+  const initSeed = reroll?.seed ?? seed;
+  const initFormat = reroll?.output_format || format;
 
   root.innerHTML = `
     <form class="gen-form" id="gen-form">

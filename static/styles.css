@@ -667,7 +667,10 @@ button.iconbtn.danger:hover:not(:disabled) {
 }
 button.iconbtn:disabled { opacity: 0.5; cursor: not-allowed; }
 
-/* Bulk-action bar shown only when select mode is on. */
+/* Bulk-action bar shown only when select mode is on. The `hidden`
+   attribute is set/cleared via JS; we must use `[hidden]` to win
+   specificity over `display: flex` below. */
+.bulk-bar[hidden] { display: none; }
 .bulk-bar {
   display: flex;
   align-items: center;
