@@ -22,10 +22,12 @@ import base64
 import io
 import json
 import os
+import re
 import sqlite3
 import sys
 import time
 import uuid
+import zipfile
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
@@ -312,7 +314,12 @@ async def index():
 
     The browser caches each `?v=<sha>` URL as a separate resource;
     bumping the SHA on every deploy guarantees a fresh graph even
-    if the page itself stays open across deploys."""
+    if the page itself stays open across deploys.
+
+    Also inlines the Heroicons SVG sprite (read from disk each
+    request — sprite.svg is ~9 KB and changes rarely) so any
+    <svg><use href="#icon-…"/></svg> resolves by fragment without
+    a separate fetch."""
     html = (STATIC_DIR / "index.html").read_text(encoding="utf-8")
     # Stamp CSS + JS so the browser sees them as new resources.
     html = html.replace(
@@ -333,6 +340,32 @@ async def index():
             f'<meta name="build" content="{BUILD_SHA}">',
             1,
         )
+    # Inline the icon sprite so <use href="#icon-…"> resolves inline.
+    sprite_path = STATIC_DIR / "icons" / "sprite.svg"
+    if sprite_path.exists() and "__ICON_SPRITE__" in html:
+        sprite = sprite_path.read_text(encoding="utf-8")
+        # Drop XML declaration — inline <svg> doesn't need it.
+        sprite = sprite.replace('<?xml version="1.0" encoding="UTF-8"?>', "")
+        # Strip the file's top-of-file comment block (between <?xml...?>
+        # and the opening <svg>); we don't ship the docstring to clients.
+        sprite = re.sub(r"<!--.*?-->", "", sprite, count=1, flags=re.DOTALL)
+        m = re.search(r"<svg\b[^>]*>", sprite)
+        end = sprite.rfind("</svg>")
+        if not m or end <= 0:
+            html = html.replace("__ICON_SPRITE__", "", 1)
+        else:
+            sprite_open = m.group(0)
+            sprite_inner = sprite[m.end() : end]
+            # Hide the sprite visually — it just registers <symbol>s.
+            sprite_open_hidden = sprite_open.replace(
+                "<svg", '<svg width="0" height="0" style="position:absolute" aria-hidden="true"', 1)
+            new_block = sprite_open_hidden + sprite_inner + "</svg>"
+            old_block = re.search(
+                r'<svg id="icon-sprite"[^>]*data-placeholder="__ICON_SPRITE__"></svg>',
+                html,
+            )
+            if old_block:
+                html = html.replace(old_block.group(0), new_block, 1)
     resp = _html_response(html)
     resp.headers["X-Build"] = BUILD_SHA
     return resp
@@ -622,6 +655,67 @@ async def clear_history() -> dict:
         return {"cleared": len(rows)}
     finally:
         conn.close()
+
+
+class DownloadRequest(BaseModel):
+    ids: list[str]
+
+
+@app.post("/api/history/download")
+async def download_history(req: DownloadRequest) -> StreamingResponse:
+    """Bundle a set of history items into a ZIP and stream it back.
+
+    Request:  { "ids": ["uuid1", "uuid2", …] }
+    Response: application/zip, attachment; filename=qwen-studio-<ts>.zip
+
+    Filenames inside the ZIP use the original `filename` (which is
+    already `qwen_<ts>_<n>.<ext>`), but if a duplicate name would
+    collide we suffix a counter. We never refuse — we just skip
+    rows whose original files are missing from disk.
+    """
+    if not req.ids:
+        raise HTTPException(400, "ids must be non-empty")
+    conn = db()
+    try:
+        placeholders = ",".join("?" * len(req.ids))
+        rows = conn.execute(
+            f"SELECT id, filename FROM history WHERE id IN ({placeholders})",
+            req.ids,
+        ).fetchall()
+    finally:
+        conn.close()
+
+    if not rows:
+        raise HTTPException(404, "no matching ids")
+
+    buf = io.BytesIO()
+    used_names: set[str] = set()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        for r in rows:
+            src = IMAGES_DIR / r["filename"]
+            if not src.exists():
+                continue
+            name = r["filename"]
+            # Disambiguate
+            base = name
+            i = 1
+            while name in used_names:
+                stem, _, ext = base.rpartition(".")
+                name = f"{stem}_{i}.{ext}"
+                i += 1
+            used_names.add(name)
+            zf.write(src, arcname=name)
+
+    buf.seek(0)
+    ts = int(time.time())
+    return StreamingResponse(
+        iter([buf.getvalue()]),
+        media_type="application/zip",
+        headers={
+            "Content-Disposition": f'attachment; filename="qwen-studio-{ts}.zip"',
+            "X-File-Count": str(len(used_names)),
+        },
+    )
 
 
 # ============================================================ Presets API

@@ -2,6 +2,7 @@
 
 import { api } from '../api.js';
 import { toast, escape, fillSelect } from '../util.js';
+import { icon } from './icons.js';
 
 let presets = [];
 let settings = {};
@@ -98,19 +99,41 @@ function paintPresets() {
   }
   host.innerHTML = presets.map(p => `
     <div class="preset-row" data-name="${escape(p.name)}">
-      <div class="preset-name">${escape(p.name)}</div>
-      <div class="preset-prompt">${escape(p.prompt)}</div>
-      <button class="secondary" data-action="load">Load</button>
-      <button class="danger" data-action="del">×</button>
+      <div class="preset-info">
+        <div class="preset-name">${escape(p.name)}</div>
+        <div class="preset-prompt">${escape(p.prompt)}</div>
+      </div>
+      <div class="preset-actions">
+        <button class="secondary" data-action="load" title="Open in Generate tab">
+          ${icon('arrow-right', { size: 14 })}<span>Load</span>
+        </button>
+        <button class="iconbtn danger" data-action="del" title="Delete preset" aria-label="Delete preset">
+          ${icon('trash', { size: 14 })}
+        </button>
+      </div>
     </div>
   `).join('');
   host.querySelectorAll('.preset-row').forEach(row => {
     const name = row.dataset.name;
     row.querySelector('[data-action=load]').addEventListener('click', () => {
       const p = presets.find(x => x.name === name);
-      sessionStorage.setItem('gen:last', JSON.stringify({ prompt: p.prompt, negative: '' }));
-      document.querySelector('nav.tabs button[data-tab="generate"]').click();
-      toast(`Loaded preset "${name}"`, 'success');
+      // Hand the preset to generate.js via sessionStorage; include the
+      // prompt + any persisted steps/seed so the form re-hydrates with
+      // them. Then switch tabs.
+      sessionStorage.setItem(
+        'gen:reroll',
+        JSON.stringify({
+          prompt: p.prompt,
+          steps: p.steps ?? null,
+          seed: p.seed ?? null,
+          guidance: null,
+          size: null,
+          output_format: null,
+        }),
+      );
+      const link = document.querySelector('[data-tab="generate"]');
+      if (link) link.click();
+      toast(`Loaded preset "${name}" — press Generate to run`, 'success');
     });
     row.querySelector('[data-action=del]').addEventListener('click', async () => {
       if (!confirm(`Delete preset "${name}"?`)) return;

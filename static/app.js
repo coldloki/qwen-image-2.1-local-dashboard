@@ -15,6 +15,7 @@ const loaders = {
   settings: () => import(`./components/settings.js?v=${BUILD}`),
 };
 const loadApi = () => import(`./api.js?v=${BUILD}`);
+const loadIcons = () => import(`./components/icons.js?v=${BUILD}`);
 
 const tabs = document.querySelectorAll('[data-tab]');
 const sections = {
@@ -61,15 +62,22 @@ window.addEventListener('hashchange', () => {
   if (sections[t]) activate(t);
 });
 
-// Theme toggle (text-only, no emoji — matches the brand font feel).
+// Theme toggle — icon + text label so users know exactly what the
+// click will do.
 const themeBtn = document.getElementById('theme-btn');
 const stored = localStorage.getItem('theme') || 'dark';
 document.documentElement.dataset.theme = stored;
-function paintThemeBtn() {
+async function paintThemeBtn() {
   const cur = document.documentElement.dataset.theme;
-  const next = cur === 'dark' ? 'Light mode' : 'Dark mode';
-  themeBtn.textContent = next;
-  themeBtn.title = `Switch to ${next.toLowerCase()}`;
+  const isDark = cur === 'dark';
+  const { icon } = await loadIcons();
+  // When in dark mode we offer the *action* "Light mode" — show sun icon
+  // to hint the direction. When in light mode we offer "Dark mode" +
+  // moon icon. Icon is just a visual cue; the text is the source of truth.
+  themeBtn.innerHTML =
+    icon(isDark ? 'sun' : 'moon', { size: 16 }) +
+    `<span>${isDark ? 'Light mode' : 'Dark mode'}</span>`;
+  themeBtn.title = `Switch to ${isDark ? 'light' : 'dark'} theme`;
   themeBtn.setAttribute('aria-label', themeBtn.title);
 }
 paintThemeBtn();

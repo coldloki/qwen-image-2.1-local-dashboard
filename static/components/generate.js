@@ -1,10 +1,15 @@
-// Generate tab — form, validation, SSE submit, progress, latest result.
+// Generate tab — two-column desktop layout:
+//   Left  : Prompt / Negative prompt / description + last generated image below
+//   Right : Sliders + selectors + Generate button
+// On mobile (<800px) collapses to single column.
 
 import { api, streamGenerate } from '../api.js';
 import { toast, fillSelect } from '../util.js';
+import { icon } from './icons.js';
 
 let presets = [];
 let currentRequest = null;  // AbortController
+let lastResult = null;       // last successful generation (for reload)
 
 export async function render(root) {
   const settings = await api.get('/api/settings');
@@ -18,105 +23,161 @@ export async function render(root) {
   const seed = parseInt(settings.default_seed || '-1', 10);
   const format = settings.default_format || 'png';
 
+  // Pick up any reroll target from the history tab.
+  const reroll = consumeReroll();
+  const rerollPrompt = reroll?.prompt || '';
+  const rerollNeg = reroll?.negative || '';
+  const rerollSize = reroll?.size;
+  const rerollSeed = reroll?.seed;
+  const rerollSteps = reroll?.steps;
+  const rerollGuidance = reroll?.guidance;
+  const rerollFormat = reroll?.output_format;
+
+  const initPrompt = prompt || rerollPrompt;
+  const initNeg = neg || rerollNeg;
+  const initSize = rerollSize || size;
+  const initSteps = rerollSteps ?? steps;
+  const initGuidance = rerollGuidance ?? guidance;
+  const initSeed = rerollSeed ?? seed;
+  const initFormat = rerollFormat || format;
+
   root.innerHTML = `
     <form class="gen-form" id="gen-form">
-      <div>
-        <label for="prompt">Prompt</label>
-        <textarea id="prompt" name="prompt" rows="4"
-          placeholder="A small red cat sitting on a wooden chair by a sunlit window."
-        >${escape(prompt)}</textarea>
+      <!-- LEFT COLUMN — what to generate + last result -->
+      <div class="col col-left">
+        <section class="card">
+          <h2 class="card-title">
+            ${icon('sparkles', { size: 16 })}
+            <span>Prompt</span>
+          </h2>
+          <p class="card-hint">
+            Describe what you want. Be specific about subject, composition,
+            lighting, mood, style. Long prompts work well — the model can use
+            up to a few hundred words.
+          </p>
+          <textarea id="prompt" name="prompt" rows="5"
+            placeholder="A small red cat sitting on a wooden chair by a sunlit window, soft morning light, photorealistic."
+          >${escape(initPrompt)}</textarea>
+
+          <details class="advanced" id="neg-details">
+            <summary>
+              <span class="advanced-label">Negative prompt</span>
+              <span class="advanced-hint">things to avoid — opens</span>
+            </summary>
+            <textarea id="negative" name="negative" rows="2"
+              placeholder="blurry, low quality, watermark, text, extra fingers"
+            >${escape(initNeg)}</textarea>
+          </details>
+        </section>
+
+        <section class="card" id="result-area">
+          <div class="card-empty">
+            ${icon('photo', { size: 28 })}
+            <p>Last generated image will appear here.</p>
+          </div>
+        </section>
       </div>
 
-      <div class="row" id="preset-row" style="display:none">
-        <select id="preset-select">
-          <option value="">— Load preset —</option>
-          ${presets.map(p => `<option value="${escape(p.name)}">${escape(p.name)}</option>`).join('')}
-        </select>
-      </div>
+      <!-- RIGHT COLUMN — controls -->
+      <div class="col col-right">
+        <section class="card">
+          <h2 class="card-title">
+            ${icon('adjustments', { size: 16 })}
+            <span>Controls</span>
+          </h2>
 
-      <div>
-        <label for="negative">Negative prompt (optional)</label>
-        <textarea id="negative" name="negative" rows="2"
-          placeholder="blurry, low quality, watermark">${escape(neg)}</textarea>
-      </div>
+          ${presets.length ? `
+          <div class="row preset-row">
+            <label for="preset-select">Preset</label>
+            <select id="preset-select">
+              <option value="">— Load preset —</option>
+              ${presets.map(p =>
+                `<option value="${escape(p.name)}">${escape(p.name)}</option>`
+              ).join('')}
+            </select>
+          </div>` : ''}
 
-      <div class="row">
-        <div>
-          <label for="size">Size</label>
-          <select id="size">
-            ${fillSelect(['1024x1024','1280x720','720x1280','1536x1024','1024x1536','768x768','512x512'], size)}
-          </select>
-        </div>
-        <div class="slider-wrap">
-          <div class="slider-label-row">
-            <label for="steps">
-              Steps
-              <span class="hint" title="Denoising iterations. 1 (fast, rough) → 100 (slow, detailed). 28 is a good default.">?</span>
+          <div class="row">
+            <div class="field">
+              <label for="size">Size</label>
+              <select id="size">
+                ${fillSelect(
+                  ['1024x1024','1280x720','720x1280','1536x1024','1024x1536','768x768','512x512'],
+                  initSize,
+                )}
+              </select>
+            </div>
+            <div class="field">
+              <label for="format">Format</label>
+              <select id="format">
+                ${fillSelect(['png','jpeg','webp'], initFormat)}
+              </select>
+            </div>
+          </div>
+
+          <div class="slider-wrap">
+            <div class="slider-label-row">
+              <label for="steps">
+                Steps
+                <span class="hint" title="Denoising iterations. 1 (fast, rough) → 100 (slow, detailed). 28 is a good default.">?</span>
+              </label>
+              <span class="slider-value" id="steps-val">${initSteps}</span>
+            </div>
+            <input type="range" id="steps" min="1" max="100" step="1" value="${initSteps}">
+            <div class="slider-ticks">
+              <span>1</span><span>25</span><span>50</span><span>75</span><span>100</span>
+            </div>
+          </div>
+
+          <div class="slider-wrap">
+            <div class="slider-label-row">
+              <label for="guidance">
+                Guidance
+                <span class="hint" title="Classifier-free guidance scale. 0 (let model decide) → 20 (strict prompt adherence). 4 is balanced.">?</span>
+              </label>
+              <span class="slider-value" id="guidance-val">${Number(initGuidance).toFixed(1)}</span>
+            </div>
+            <input type="range" id="guidance" min="0" max="20" step="0.1" value="${initGuidance}">
+            <div class="slider-ticks">
+              <span>0</span><span>5</span><span>10</span><span>15</span><span>20</span>
+            </div>
+          </div>
+
+          <div class="slider-wrap">
+            <div class="slider-label-row">
+              <label for="seed">
+                Seed
+                <span class="hint" title="Random seed for reproducibility. -1 (or empty) = a new random seed each generation.">?</span>
+              </label>
+              <span class="slider-value" id="seed-val">${initSeed < 0 ? 'random' : initSeed}</span>
+            </div>
+            <input type="range" id="seed" min="-1" max="999999999" step="1" value="${initSeed}">
+            <div class="slider-ticks"><span>−1</span><span>5×10⁵</span><span>10⁹</span></div>
+            <label class="seed-random-toggle">
+              <input type="checkbox" id="seed-random" ${initSeed < 0 ? 'checked' : ''}>
+              Random each time
             </label>
-            <span class="slider-value" id="steps-val">${steps}</span>
           </div>
-          <input type="range" id="steps" min="1" max="100" step="1" value="${steps}">
-          <div class="slider-ticks">
-            <span>1</span><span>25</span><span>50</span><span>75</span><span>100</span>
+
+          <button type="submit" class="primary submit-btn" id="submit-btn">
+            ${icon('sparkles', { size: 16 })}
+            <span>Generate</span>
+          </button>
+
+          <div id="progress-area" hidden>
+            <div class="progress-bar"><div id="progress-fill"></div></div>
+            <div class="progress-info" id="progress-info">Starting…</div>
           </div>
-        </div>
-        <div class="slider-wrap">
-          <div class="slider-label-row">
-            <label for="guidance">
-              Guidance
-              <span class="hint" title="Classifier-free guidance scale. 0 (let model decide) → 20 (strict prompt adherence). 4 is balanced.">?</span>
-            </label>
-            <span class="slider-value" id="guidance-val">${guidance.toFixed(1)}</span>
-          </div>
-          <input type="range" id="guidance" min="0" max="20" step="0.1" value="${guidance}">
-          <div class="slider-ticks">
-            <span>0</span><span>5</span><span>10</span><span>15</span><span>20</span>
-          </div>
-        </div>
-        <div class="slider-wrap">
-          <div class="slider-label-row">
-            <label for="seed">
-              Seed
-              <span class="hint" title="Random seed for reproducibility. -1 (or empty) = a new random seed each generation.">?</span>
-            </label>
-            <span class="slider-value" id="seed-val">${seed < 0 ? 'random' : seed}</span>
-          </div>
-          <input type="range" id="seed" min="-1" max="999999999" step="1" value="${seed}">
-          <div class="slider-ticks"><span>−1</span><span>5×10⁵</span><span>10⁹</span></div>
-          <label class="seed-random-toggle">
-            <input type="checkbox" id="seed-random" ${seed < 0 ? 'checked' : ''}>
-            Random each time
-          </label>
-        </div>
-        <div>
-          <label for="format">Format</label>
-          <select id="format">
-            ${fillSelect(['png','jpeg','webp'], format)}
-          </select>
-        </div>
+        </section>
       </div>
-
-      <button type="submit" class="primary" id="submit-btn">Generate</button>
-
-      <div id="progress-area" hidden>
-        <div class="progress-bar"><div id="progress-fill"></div></div>
-        <div class="progress-info" id="progress-info">Starting…</div>
-      </div>
-
-      <div id="result-area"></div>
     </form>
   `;
 
-  // Show preset row if any exist
-  if (presets.length) {
-    document.getElementById('preset-row').style.display = '';
-  }
-
-  // Live-update slider value badges + sync seed-random checkbox
-  function paintBadge(id, val) {
+  // Wire slider value badges
+  const paintBadge = (id, val) => {
     const el = document.getElementById(id);
     if (el) el.textContent = val;
-  }
+  };
   const stepsEl = document.getElementById('steps');
   const guidanceEl = document.getElementById('guidance');
   const seedEl = document.getElementById('seed');
@@ -125,10 +186,10 @@ export async function render(root) {
   guidanceEl.addEventListener('input', () =>
     paintBadge('guidance-val', parseFloat(guidanceEl.value).toFixed(1))
   );
-  function paintSeed() {
+  const paintSeed = () => {
     const v = parseInt(seedEl.value, 10);
     paintBadge('seed-val', seedRandom.checked || v < 0 ? 'random' : v);
-  }
+  };
   seedEl.addEventListener('input', paintSeed);
   seedRandom.addEventListener('change', () => {
     if (seedRandom.checked) seedEl.value = -1;
@@ -163,11 +224,11 @@ export async function render(root) {
   document.getElementById('gen-form').addEventListener('submit', async (e) => {
     e.preventDefault();
     if (currentRequest) {
-      // Allow cancel: abort the in-flight fetch.
       currentRequest.abort();
       currentRequest = null;
       toast('Cancelled');
-      document.getElementById('submit-btn').textContent = 'Generate';
+      const btn = document.getElementById('submit-btn');
+      btn.innerHTML = `${icon('sparkles', { size: 16 })}<span>Generate</span>`;
       return;
     }
     const promptVal = document.getElementById('prompt').value.trim();
@@ -188,36 +249,32 @@ export async function render(root) {
     }));
 
     currentRequest = new AbortController();
-    document.getElementById('submit-btn').textContent = 'Cancel';
+    const btn = document.getElementById('submit-btn');
+    btn.innerHTML = `${icon('x-mark', { size: 16 })}<span>Cancel</span>`;
+    btn.classList.add('cancel');
     document.getElementById('progress-area').hidden = false;
     document.getElementById('progress-fill').style.width = '0%';
     document.getElementById('progress-info').textContent = 'Starting…';
-    document.getElementById('result-area').innerHTML = '';
     const t0 = performance.now();
 
-    /** Compose the status line — timer + phase.
-     *  Always shows ⏱ NN.Ns so a stale-looking "0.0s" can never happen. */
     function paintStatus(phase, msg) {
       const elapsed = (performance.now() - t0) / 1000;
       const phaseText = msg || phase || 'denoising';
       document.getElementById('progress-info').textContent =
-        `⏱ ${elapsed.toFixed(1)}s · ${phaseText}`;
+        `${elapsed.toFixed(1)}s · ${phaseText}`;
     }
 
     try {
-      // SSE doesn't support AbortController in the same way — but we can
-      // race it against a timeout/abort. For now we just iterate.
       for await (const evt of streamGenerate(req)) {
         if (typeof evt.progress === 'number') {
           document.getElementById('progress-fill').style.width =
             Math.max(0, Math.min(100, evt.progress * 100)) + '%';
         }
         if (evt.result) {
-          // Fill bar fully on success regardless of last server tick.
           document.getElementById('progress-fill').style.width = '100%';
           paintStatus('done');
+          lastResult = evt.result;
           renderResult(evt.result);
-          // Notify history tab if mounted
           window.dispatchEvent(new CustomEvent('history:invalidate'));
           continue;
         }
@@ -226,8 +283,6 @@ export async function render(root) {
           toast(evt.error, 'error');
           break;
         }
-        // For any other event (phase connecting, phase denoising, progress ticks),
-        // show the local elapsed timer so the user always sees motion.
         if (evt.phase || evt.msg || typeof evt.progress === 'number') {
           paintStatus(evt.phase || 'denoising', evt.msg);
         }
@@ -237,7 +292,8 @@ export async function render(root) {
       toast(e.message || String(e), 'error');
     } finally {
       currentRequest = null;
-      document.getElementById('submit-btn').textContent = 'Generate';
+      btn.classList.remove('cancel');
+      btn.innerHTML = `${icon('sparkles', { size: 16 })}<span>Generate</span>`;
     }
   });
 }
@@ -253,19 +309,24 @@ function renderResult(entry) {
         <span>${entry.elapsed_s}s</span>
         <span>${entry.output_format.toUpperCase()}</span>
       </div>
-      <details style="margin-top:0.5rem">
-        <summary style="cursor:pointer;color:var(--muted)">Prompt</summary>
-        <div style="margin-top:0.3rem">${escape(entry.prompt)}</div>
+      <details class="prompt-details">
+        <summary>Prompt</summary>
+        <div class="prompt-text">${escape(entry.prompt)}</div>
       </details>
-      <div style="margin-top:0.6rem">
-        <button class="secondary" id="reroll-btn" data-id="${entry.id}">🎲 Re-roll this</button>
-        <a class="secondary" href="${entry.image_url}" download="${entry.filename}" style="text-decoration:none;display:inline-block">⬇ Download</a>
+      <div class="result-actions">
+        <button type="button" class="secondary" id="reroll-btn" data-id="${entry.id}">
+          ${icon('dice', { size: 14 })}<span>Re-roll</span>
+        </button>
+        <a class="secondary" href="${entry.image_url}" download="${entry.filename}">
+          ${icon('arrow-down-tray', { size: 14 })}<span>Download</span>
+        </a>
       </div>
     </div>
   `;
   document.getElementById('reroll-btn').addEventListener('click', () => {
     sessionStorage.setItem('gen:reroll', JSON.stringify(entry));
     document.dispatchEvent(new CustomEvent('reroll:from-result', { detail: entry }));
+    toast('Loaded into form — re-rolls use same params', 'success');
   });
 }
 
@@ -275,10 +336,9 @@ function escape(s) {
   }[c]));
 }
 
-// Public hook for history-tab reroll
 export function consumeReroll() {
   const raw = sessionStorage.getItem('gen:reroll');
   if (!raw) return null;
   sessionStorage.removeItem('gen:reroll');
-  return JSON.parse(raw);
+  try { return JSON.parse(raw); } catch { return null; }
 }

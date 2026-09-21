@@ -12,6 +12,12 @@
   <link rel="stylesheet" href="/static/styles.css">
 </head>
 <body>
+  <!-- Heroicons sprite inlined by the server. The <svg> below contains
+       <symbol id="icon-…"> children; any <svg><use href="#icon-…"/></svg>
+       elsewhere in the document resolves them by fragment. The source
+       lives in static/icons/sprite.svg; the server reads it at request
+       time and substitutes it for the placeholder on every HTML load. -->
+  <svg id="icon-sprite" aria-hidden="true" style="position:absolute;width:0;height:0;overflow:hidden" data-placeholder="__ICON_SPRITE__"></svg>
   <header class="topbar">
     <div class="topbar-inner">
       <a class="brand" href="#generate">
@@ -25,7 +31,7 @@
         <a href="#settings" data-tab="settings">Settings</a>
       </nav>
       <div class="actions">
-        <button class="iconbtn" id="theme-btn" title="Toggle theme" aria-label="Toggle theme"></button>
+        <button class="iconbtn" id="theme-btn" aria-label="Toggle theme"></button>
       </div>
     </div>
   </header>

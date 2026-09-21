@@ -1,37 +1,112 @@
-// History tab — masonry gallery + lightbox + per-tile reroll.
+// History tab — masonry gallery + lightbox + select mode for bulk actions.
+//
+// Toolbar layout (left → right):
+//   [ Search prompt ▢ ]   Sort: [Newest ▾]   [Refresh]   [Select]   [Clear all…]
+//
+// In Select mode:
+//   • Tiles gain a checkbox overlay.
+//   • Toolbar swaps "Select" → "Cancel" + reveals [Download N] and
+//     [Delete N] buttons.
+//   • Header counter shows how many are selected.
+//
+// Click a tile in Select mode toggles its selection (doesn't open lightbox).
 
 import { api } from '../api.js';
 import { toast } from '../util.js';
-import { consumeReroll } from './generate.js';
+import { icon } from './icons.js';
 
-let items = [];
+let items = [];          // full list from server
+let view = [];           // filtered + sorted view
 let activeIndex = -1;
 let dialog = null;
 let imgEl = null;
 let counterEl = null;
 let barEl = null;
 
+let ui = {
+  selectMode: false,
+  selected: new Set(),    // ids
+  query: '',
+  sort: 'newest',         // 'newest' | 'oldest' | 'biggest'
+};
+
 export async function render(root) {
   items = await api.get('/api/history');
   root.innerHTML = `
     <div class="history-toolbar">
-      <div></div>
-      <div>
-        <button class="iconbtn" id="refresh-btn" title="Refresh history">↻</button>
-        <button class="iconbtn danger" id="clear-btn" title="Clear all">🗑</button>
+      <div class="ht-left">
+        <div class="search-wrap">
+          <span class="search-icon">${icon('adjustments', { size: 14 })}</span>
+          <input type="search" id="hist-search" placeholder="Search prompts…" autocomplete="off">
+        </div>
+        <label class="sort-wrap">
+          <span class="sort-label">Sort</span>
+          <select id="hist-sort">
+            <option value="newest">Newest first</option>
+            <option value="oldest">Oldest first</option>
+            <option value="biggest">Largest first</option>
+          </select>
+        </label>
+      </div>
+      <div class="ht-right">
+        <button class="iconbtn" id="refresh-btn" title="Refresh">
+          ${icon('arrow-path', { size: 15 })}
+          <span>Refresh</span>
+        </button>
+        <button class="iconbtn" id="select-btn" title="Enter select mode">
+          ${icon('squares', { size: 15 })}
+          <span>Select</span>
+        </button>
+        <button class="iconbtn danger" id="clear-btn" title="Delete all history">
+          ${icon('trash', { size: 15 })}
+          <span>Clear all</span>
+        </button>
       </div>
     </div>
+
+    <!-- Select-mode bulk action bar (shown only when ui.selectMode) -->
+    <div class="bulk-bar" id="bulk-bar" hidden>
+      <span id="bulk-count">0 selected</span>
+      <div class="bulk-actions">
+        <button class="iconbtn" id="bulk-download" disabled>
+          ${icon('arrow-down-tray', { size: 15 })}
+          <span id="bulk-download-label">Download</span>
+        </button>
+        <button class="iconbtn danger" id="bulk-delete" disabled>
+          ${icon('trash', { size: 15 })}
+          <span id="bulk-delete-label">Delete</span>
+        </button>
+        <button class="iconbtn" id="bulk-cancel">
+          ${icon('x-mark', { size: 15 })}
+          <span>Cancel</span>
+        </button>
+      </div>
+    </div>
+
     <div id="gallery-host"></div>
+
     <dialog class="lightbox" id="lightbox">
       <div class="lb-body">
-        <button class="lb-close" id="lb-close" aria-label="Close">✕</button>
+        <button class="lb-close" id="lb-close" aria-label="Close">
+          ${icon('x-mark', { size: 18 })}
+        </button>
         <div class="lb-counter" id="lb-counter"></div>
-        <button class="lb-nav lb-prev" id="lb-prev" aria-label="Previous">‹</button>
+        <button class="lb-nav lb-prev" id="lb-prev" aria-label="Previous">
+          ${icon('chevron-down', { size: 22, cls: 'lb-chevron-left' })}
+        </button>
         <img id="lb-img" alt="">
-        <button class="lb-nav lb-next" id="lb-next" aria-label="Next">›</button>
+        <button class="lb-nav lb-next" id="lb-next" aria-label="Next">
+          ${icon('chevron-down', { size: 22, cls: 'lb-chevron-right' })}
+        </button>
         <div class="lb-actions">
-          <button class="iconbtn" id="lb-reroll" title="Re-roll with these params">🎲</button>
-          <button class="iconbtn danger" id="lb-delete" title="Delete this image">🗑</button>
+          <button class="iconbtn" id="lb-reroll" title="Re-roll with these params">
+            ${icon('dice', { size: 15 })}
+            <span>Re-roll</span>
+          </button>
+          <button class="iconbtn danger" id="lb-delete" title="Delete this image">
+            ${icon('trash', { size: 15 })}
+            <span>Delete</span>
+          </button>
         </div>
         <div class="lb-bar" id="lb-bar"></div>
       </div>
@@ -48,31 +123,60 @@ export async function render(root) {
   paint();
 }
 
+/** Filter `items` by `ui.query`, sort by `ui.sort`, write to `view`. */
+function rebuildView() {
+  const q = ui.query.trim().toLowerCase();
+  view = items.filter(it => !q || (it.prompt || '').toLowerCase().includes(q));
+  switch (ui.sort) {
+    case 'oldest':
+      view.sort((a, b) => a.ts_ms - b.ts_ms);
+      break;
+    case 'biggest':
+      view.sort((a, b) => (b.width * b.height) - (a.width * a.height));
+      break;
+    case 'newest':
+    default:
+      view.sort((a, b) => b.ts_ms - a.ts_ms);
+  }
+}
+
 function paint() {
   const host = document.getElementById('gallery-host');
-  if (!host) return;  // History tab not mounted yet
-  if (!items.length) {
-    host.innerHTML = `<div class="empty">No history yet. Generate something on the 🎨 tab.</div>`;
+  if (!host) return;
+  rebuildView();
+  if (!view.length) {
+    host.innerHTML = `<div class="empty">${
+      ui.query
+        ? 'No images match your search.'
+        : 'No history yet. Generate something on the Generate tab.'
+    }</div>`;
     return;
   }
   host.innerHTML = `
     <div class="masonry">
-      ${items.map((it, i) => tileHtml(it, i)).join('')}
+      ${view.map((it, i) => tileHtml(it, i)).join('')}
     </div>
   `;
   host.querySelectorAll('.tile').forEach((el, i) => {
-    el.addEventListener('click', (e) => openLightbox(i));
+    el.addEventListener('click', (e) => {
+      if (ui.selectMode) {
+        toggleSelect(view[i].id);
+        return;
+      }
+      openLightbox(i);
+    });
   });
+  refreshBulkBar();
 }
 
 function tileHtml(it, i) {
-  // has_alpha: add a checker background so transparent PNGs read at
-  // a glance in the gallery grid. The class is also propagated to the
-  // lightbox image for consistency when the user opens it.
   const alpha = it.has_alpha ? ' tile--alpha' : '';
+  const checked = ui.selected.has(it.id) ? ' tile--checked' : '';
+  const selectable = ui.selectMode ? ' tile--selectable' : '';
   return `
-    <div class="tile${alpha}" data-i="${i}" data-id="${it.id}" data-alpha="${alpha ? '1' : '0'}">
+    <div class="tile${alpha}${checked}${selectable}" data-i="${i}" data-id="${it.id}">
       <img src="${it.thumb_url}" alt="" loading="lazy">
+      <span class="tile-check">${icon('check', { size: 14 })}</span>
     </div>
   `;
 }
@@ -82,23 +186,28 @@ function bindLightbox() {
   document.getElementById('lb-prev').addEventListener('click', () => nav(-1));
   document.getElementById('lb-next').addEventListener('click', () => nav(+1));
   document.getElementById('lb-reroll').addEventListener('click', () => {
-    if (activeIndex >= 0) reroll(items[activeIndex]);
+    if (activeIndex >= 0) reroll(view[activeIndex]);
   });
   document.getElementById('lb-delete').addEventListener('click', async () => {
     if (activeIndex < 0) return;
-    if (!confirm('Delete this image from history?')) return;
-    const it = items[activeIndex];
+    const it = view[activeIndex];
+    if (!confirm(`Delete this image?\n\n"${(it.prompt || '').slice(0, 80)}${(it.prompt||'').length>80?'…':''}"`)) return;
     await api.del(`/api/history/${it.id}`);
-    items.splice(activeIndex, 1);
+    items = items.filter(x => x.id !== it.id);
+    if (ui.selected.has(it.id)) ui.selected.delete(it.id);
     if (!items.length) {
       dialog.close();
+      activeIndex = -1;
       paint();
       toast('Deleted', 'success');
       return;
     }
-    // Adjust activeIndex and open neighbor
-    activeIndex = Math.min(activeIndex, items.length - 1);
-    openLightbox(activeIndex);
+    activeIndex = Math.min(activeIndex, view.length - 1);
+    if (activeIndex < 0) {
+      dialog.close();
+    } else {
+      openLightbox(activeIndex);
+    }
     paint();
   });
   dialog.addEventListener('click', (e) => {
@@ -115,25 +224,148 @@ function bindLightbox() {
 function bindToolbar() {
   document.getElementById('refresh-btn').addEventListener('click', async () => {
     items = await api.get('/api/history');
+    // Drop selections that no longer exist
+    const ids = new Set(items.map(x => x.id));
+    for (const id of [...ui.selected]) if (!ids.has(id)) ui.selected.delete(id);
     paint();
     toast('Refreshed', 'success');
   });
+
+  const selectBtn = document.getElementById('select-btn');
+  selectBtn.addEventListener('click', () => {
+    setSelectMode(!ui.selectMode);
+  });
+
+  document.getElementById('bulk-cancel').addEventListener('click', () => {
+    setSelectMode(false);
+  });
+
+  document.getElementById('bulk-delete').addEventListener('click', async () => {
+    const n = ui.selected.size;
+    if (!n) return;
+    if (!confirm(`Delete ${n} image${n===1?'':'s'} from history? This cannot be undone.`)) return;
+    const ids = [...ui.selected];
+    let ok = 0;
+    for (const id of ids) {
+      try { await api.del(`/api/history/${id}`); ok++; }
+      catch { /* skip */ }
+    }
+    items = items.filter(x => !ui.selected.has(x.id));
+    ui.selected.clear();
+    setSelectMode(false);
+    paint();
+    toast(`Deleted ${ok} image${ok===1?'':'s'}`, 'success');
+  });
+
+  document.getElementById('bulk-download').addEventListener('click', async () => {
+    const ids = [...ui.selected];
+    if (!ids.length) return;
+    const targets = items.filter(x => ids.includes(x.id));
+    if (targets.length === 1) {
+      // Single image — direct download via anchor
+      const it = targets[0];
+      const a = document.createElement('a');
+      a.href = it.image_url;
+      a.download = it.filename || `${it.id}.${it.output_format || 'png'}`;
+      a.click();
+      return;
+    }
+    // Multi — request a zip from the server.
+    try {
+      toast(`Preparing ${targets.length} images…`, 'success');
+      const res = await fetch('/api/history/download', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ ids }),
+      });
+      if (!res.ok) throw new Error(`Server returned ${res.status}`);
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `qwen-studio-${Date.now()}.zip`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+      toast(`Downloaded ${targets.length} images`, 'success');
+    } catch (e) {
+      toast(`Download failed: ${e.message}`, 'error');
+    }
+  });
+
   document.getElementById('clear-btn').addEventListener('click', async () => {
-    if (!confirm('Delete ALL history? This cannot be undone.')) return;
+    if (!items.length) {
+      toast('History is already empty', 'success');
+      return;
+    }
+    if (!confirm(
+      `Delete ALL ${items.length} image${items.length===1?'':'s'} from history?\n\n` +
+      'This will remove every saved generation and its files. This cannot be undone.',
+    )) return;
     await api.del('/api/history');
     items = [];
+    ui.selected.clear();
+    setSelectMode(false);
     paint();
-    toast('History cleared', 'success');
+    toast(`Cleared ${items.length} images`.replace('0', ''), 'success');
+  });
+
+  document.getElementById('hist-search').addEventListener('input', (e) => {
+    ui.query = e.target.value;
+    paint();
+  });
+  document.getElementById('hist-sort').addEventListener('change', (e) => {
+    ui.sort = e.target.value;
+    paint();
   });
 }
 
+function setSelectMode(on) {
+  ui.selectMode = on;
+  if (!on) ui.selected.clear();
+  document.getElementById('bulk-bar').hidden = !on;
+  document.body.classList.toggle('select-mode', on);
+  const selectBtn = document.getElementById('select-btn');
+  if (on) {
+    selectBtn.innerHTML =
+      `${icon('x-mark', { size: 15 })}<span>Done</span>`;
+  } else {
+    selectBtn.innerHTML =
+      `${icon('squares', { size: 15 })}<span>Select</span>`;
+  }
+  paint();
+}
+
+function toggleSelect(id) {
+  if (ui.selected.has(id)) ui.selected.delete(id);
+  else ui.selected.add(id);
+  // Update only the affected tile + bulk bar without re-rendering everything
+  const el = document.querySelector(`.tile[data-id="${CSS.escape(id)}"]`);
+  if (el) el.classList.toggle('tile--checked', ui.selected.has(id));
+  refreshBulkBar();
+}
+
+function refreshBulkBar() {
+  const n = ui.selected.size;
+  const countEl = document.getElementById('bulk-count');
+  if (countEl) countEl.textContent = `${n} selected`;
+  const downloadBtn = document.getElementById('bulk-download');
+  const deleteBtn = document.getElementById('bulk-delete');
+  if (downloadBtn) downloadBtn.disabled = n === 0;
+  if (deleteBtn) deleteBtn.disabled = n === 0;
+  const dlLabel = document.getElementById('bulk-download-label');
+  if (dlLabel) dlLabel.textContent = n > 0 ? `Download ${n}` : 'Download';
+  const delLabel = document.getElementById('bulk-delete-label');
+  if (delLabel) delLabel.textContent = n > 0 ? `Delete ${n}` : 'Delete';
+}
+
 function openLightbox(i) {
-  if (i < 0 || i >= items.length) return;
+  if (i < 0 || i >= view.length) return;
   activeIndex = i;
-  const it = items[i];
+  const it = view[i];
   imgEl.src = it.image_url;
   imgEl.alt = it.prompt;
-  // Apply checker background to lightbox image too if alpha
   if (it.has_alpha) {
     imgEl.classList.add('lb-img--alpha');
     dialog.classList.add('lightbox--alpha');
@@ -141,7 +373,7 @@ function openLightbox(i) {
     imgEl.classList.remove('lb-img--alpha');
     dialog.classList.remove('lightbox--alpha');
   }
-  counterEl.textContent = `${i + 1} / ${items.length}`;
+  counterEl.textContent = `${i + 1} / ${view.length}`;
   barEl.textContent =
     `${it.ts} · ${it.width}×${it.height} · ${it.steps} steps · ` +
     `seed ${it.seed ?? '?'} · ${it.elapsed_s}s\n${it.prompt}`;
@@ -149,48 +381,30 @@ function openLightbox(i) {
 }
 
 function nav(delta) {
-  if (!items.length) return;
-  activeIndex = (activeIndex + delta + items.length) % items.length;
+  if (!view.length) return;
+  activeIndex = (activeIndex + delta + view.length) % view.length;
   openLightbox(activeIndex);
 }
 
 function reroll(it) {
+  // Hand the entry to the generate tab and switch.
   sessionStorage.setItem('gen:reroll', JSON.stringify(it));
-  document.dispatchEvent(new CustomEvent('reroll:from-history', { detail: it }));
+  const generateLink = document.querySelector('[data-tab="generate"]');
+  if (generateLink) generateLink.click();
 }
 
-// External: when a new generation completes, refresh in the background
+// External: when a new generation completes, refresh in the background.
 window.addEventListener('history:invalidate', async () => {
   items = await api.get('/api/history');
+  const ids = new Set(items.map(x => x.id));
+  for (const id of [...ui.selected]) if (!ids.has(id)) ui.selected.delete(id);
   paint();
 });
 
-// External: switch tab + populate generate
-document.addEventListener('reroll:from-history', async (e) => {
-  document.querySelector('nav.tabs button[data-tab="generate"]').click();
-  // Give generate tab a tick to render
-  setTimeout(() => {
-    const detail = e.detail;
-    if (!detail) return;
-    const p = document.getElementById('prompt');
-    if (!p) return;
-    p.value = detail.prompt || '';
-    if (detail.steps != null) {
-      document.getElementById('steps').value = detail.steps;
-      document.getElementById('steps-val').textContent = detail.steps;
-    }
-    // Re-randomize seed
-    document.getElementById('seed').value = -1;
-    document.getElementById('seed-random').checked = true;
-    document.getElementById('seed-val').textContent = 'random';
-    document.getElementById('size').value =
-      `${detail.width}x${detail.height}`;
-    document.getElementById('format').value = detail.output_format || 'png';
-    document.getElementById('guidance').value = detail.guidance || 4.0;
-    document.getElementById('guidance-val').textContent =
-      parseFloat(detail.guidance || 4.0).toFixed(1);
-    toast('Loaded into Generate. Press Generate to re-roll.', 'success');
-  }, 100);
-});
-
-export { consumeReroll };
+// Re-export consumeReroll so app.js can read it (used elsewhere; harmless).
+export function consumeReroll() {
+  const raw = sessionStorage.getItem('gen:reroll');
+  if (!raw) return null;
+  sessionStorage.removeItem('gen:reroll');
+  try { return JSON.parse(raw); } catch { return null; }
+}
