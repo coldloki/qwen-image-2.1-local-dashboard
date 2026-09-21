@@ -725,6 +725,8 @@ async function resolveThumb(id) {
 }
 
 // Gallery picker dialog — choose one image to insert into a ref slot.
+// Lets users pick from the existing gallery OR upload a fresh image
+// from disk (which is added to the gallery as a 'reference' kind row).
 async function openRefPicker(slotIdx) {
   const existing = document.getElementById('ref-picker');
   if (existing) existing.remove();
@@ -733,6 +735,12 @@ async function openRefPicker(slotIdx) {
   dlg.className = 'ref-picker';
   dlg.innerHTML = `
     <h3>Pick a reference image</h3>
+    <div class="ref-picker-toolbar">
+      <button type="button" class="iconbtn" id="ref-picker-upload">
+        ${icon('arrow-up-tray', { size: 15 })}<span>Upload from disk</span>
+      </button>
+      <input type="file" id="ref-picker-file" accept="image/png,image/jpeg,image/webp" hidden>
+    </div>
     <div class="ref-picker-grid" id="ref-picker-grid">
       <div class="ref-picker-loading">Loading…</div>
     </div>
@@ -745,10 +753,44 @@ async function openRefPicker(slotIdx) {
   dlg.addEventListener('close', () => dlg.remove());
   dlg.addEventListener('click', (e) => { if (e.target === dlg) dlg.close(); });
   dlg.showModal();
+  // Upload handler — sends the file to /api/upload, inserts the new
+  // row id into the ref slot, closes the picker.
+  const fileInput = dlg.querySelector('#ref-picker-file');
+  dlg.querySelector('#ref-picker-upload').addEventListener('click', () => fileInput.click());
+  fileInput.addEventListener('change', async () => {
+    const f = fileInput.files?.[0];
+    if (!f) return;
+    const uploadBtn = dlg.querySelector('#ref-picker-upload');
+    uploadBtn.disabled = true;
+    const origHtml = uploadBtn.innerHTML;
+    uploadBtn.innerHTML = `${icon('arrow-path', { size: 15, cls: 'spin' })}<span>Uploading…</span>`;
+    try {
+      const fd = new FormData();
+      fd.append('file', f);
+      const r = await fetch('/api/upload', { method: 'POST', body: fd });
+      if (!r.ok) {
+        const err = await r.json().catch(() => ({ detail: r.statusText }));
+        toast(`Upload failed: ${err.detail || r.statusText}`, 'error');
+        return;
+      }
+      const row = await r.json();
+      // Invalidate cache so subsequent picks see the new row.
+      _historyCache.items = null;
+      refImageIds[slotIdx] = row.id;
+      refImageIds = refImageIds.filter(x => x);
+      paintRefs();
+      dlg.close();
+    } catch (e) {
+      toast(`Upload failed: ${e.message}`, 'error');
+    } finally {
+      uploadBtn.disabled = false;
+      uploadBtn.innerHTML = origHtml;
+    }
+  });
   const grid = dlg.querySelector('#ref-picker-grid');
   const items = await getHistoryItems();
   if (!items.length) {
-    grid.innerHTML = '<div class="ref-picker-empty">No images yet — generate something first.</div>';
+    grid.innerHTML = '<div class="ref-picker-empty">No images yet — upload one or generate something first.</div>';
     return;
   }
   grid.innerHTML = '';
@@ -756,11 +798,10 @@ async function openRefPicker(slotIdx) {
     const b = document.createElement('button');
     b.type = 'button';
     b.className = 'ref-picker-cell';
-    b.title = (it.prompt || '').slice(0, 80);
+    b.title = (it.prompt || '').slice(0, 80) || '(uploaded reference)';
     const usedElsewhere = refImageIds.includes(it.id) && refImageIds[slotIdx] !== it.id;
     b.innerHTML = `<img alt="" src="${it.thumb_url}">${usedElsewhere ? '<span class="ref-picker-dup">already used</span>' : ''}`;
     b.addEventListener('click', () => {
-      // Replace or insert at this slot
       refImageIds[slotIdx] = it.id;
       refImageIds = refImageIds.filter(x => x); // compact
       paintRefs();

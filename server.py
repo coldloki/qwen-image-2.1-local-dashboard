@@ -34,7 +34,7 @@ from typing import Any
 
 import httpx
 import uvicorn
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, File, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from PIL import Image
@@ -1258,6 +1258,77 @@ async def upscale(req: UpscaleRequest, request: Request):
                 _GEN_ACTIVE[rid]["finished_at"] = time.time()
 
     return StreamingResponse(event_stream(), media_type="text/event-stream")
+
+
+# ============================================================ Upload (for reference images)
+
+@app.post("/api/upload")
+async def upload_image(file: UploadFile = File(...)) -> dict:
+    """Accept an image file from the user's disk and add it to the
+    gallery as a 'reference' kind row.
+
+    The row has no prompt / negative / seed (it didn't come from the
+    brain), and is only useful as a reference image for subsequent
+    generations — selecting it in the refs picker will route to the
+    brain's /v1/images/edits endpoint.
+
+    Limits:
+    - Max 20 MB raw upload (browsers usually stay well under this for
+      single images; rejects before we waste disk on huge dumps).
+    - Pillow must be able to decode it (raises HTTP 415 otherwise).
+    """
+    raw = await file.read()
+    if len(raw) > 20 * 1024 * 1024:
+        raise HTTPException(status_code=413, detail="Image larger than 20 MB")
+    if not raw:
+        raise HTTPException(status_code=400, detail="Empty file")
+    try:
+        with Image.open(io.BytesIO(raw)) as im:
+            im.load()
+            w, h = im.size
+            fmt = (im.format or "PNG").lower()
+            has_alpha = _has_real_alpha(im)
+    except Exception as e:
+        raise HTTPException(status_code=415, detail=f"Not a readable image: {e}")
+    ext = {"jpeg": "jpg", "jpg": "jpg", "png": "png", "webp": "webp"}.get(fmt, "png")
+    image_id, path = _save_original(raw, ext)
+    thumb_path = THUMBS_DIR / f"{image_id}.webp"
+    try:
+        _make_thumb(path, thumb_path)
+    except Exception as e:
+        print(f"[upload thumb] {image_id}: {e}", file=sys.stderr)
+    from datetime import datetime
+    conn = db()
+    try:
+        conn.execute(
+            """INSERT INTO history
+               (id, ts, prompt, negative, width, height, steps, guidance,
+                seed, output_format, filename, elapsed_s, size_bytes,
+                has_alpha, kind, parent_id, reference_image_ids)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                image_id,
+                datetime.utcnow().isoformat(timespec="seconds"),
+                "",                  # no prompt — uploaded as a ref
+                "",
+                w, h,
+                0, 0.0,              # steps/guidance N/A
+                None,
+                ext.upper(),
+                path.name,
+                0.0,                 # elapsed_s N/A
+                len(raw),
+                1 if has_alpha else 0,
+                "reference",         # distinguish from brain output
+                None,
+                None,
+            ),
+        )
+        conn.commit()
+        row = conn.execute("SELECT * FROM history WHERE id = ?", (image_id,)).fetchone()
+    finally:
+        conn.close()
+    return _row_to_dict(row)
 
 
 def _row_filename(row) -> str:

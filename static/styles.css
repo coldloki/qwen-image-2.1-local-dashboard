@@ -1389,8 +1389,8 @@ dialog.upscale-modal {
   padding: 1.25rem;
   border: 1px solid var(--border);
   border-radius: 14px;
-  background: var(--surface);
-  color: var(--text);
+  background: var(--bg-2);
+  color: var(--fg);
   box-shadow: 0 24px 60px rgba(0,0,0,0.4);
 }
 dialog.upscale-modal::backdrop { background: rgba(0,0,0,0.55); }
@@ -1535,8 +1535,8 @@ dialog.ref-picker {
   padding: 1.25rem;
   border: 1px solid var(--border);
   border-radius: 14px;
-  background: var(--surface);
-  color: var(--text);
+  background: var(--bg-2);
+  color: var(--fg);
   box-shadow: 0 24px 60px rgba(0,0,0,0.4);
 }
 dialog.ref-picker::backdrop { background: rgba(0,0,0,0.55); }
@@ -1634,4 +1634,22 @@ dialog.ref-picker h3 { margin: 0 0 0.9rem; font-size: 1.05rem; }
   display: inline-flex;
   align-items: center;
   justify-content: center;
+}
+
+.ref-picker-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin-bottom: 0.7rem;
+}
+.ref-picker-toolbar .iconbtn {
+  padding: 0.4rem 0.7rem;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--bg-3);
+  font-size: 0.85rem;
+}
+.ref-picker-toolbar .iconbtn:hover {
+  border-color: var(--accent);
+  color: var(--accent);
 }
