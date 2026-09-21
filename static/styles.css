@@ -894,15 +894,31 @@ button.iconbtn:disabled { opacity: 0.5; cursor: not-allowed; }
 }
 
 .masonry {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
-  gap: var(--space-4);
+  /* True CSS columns masonry — each column grows independently based
+     on its tiles' intrinsic heights. No row-alignment gaps. The trade-
+     off: items flow top-to-bottom WITHIN each column (not strictly
+     left-to-right across the grid), which is invisible for a
+     "newest first" feed. */
+  column-count: 4;
+  column-gap: var(--space-4);
+}
+@media (max-width: 1100px) {
+  .masonry { column-count: 3; }
+}
+@media (max-width: 800px) {
+  .masonry { column-count: 2; }
 }
 @media (max-width: 700px) {
-  .masonry {
-    grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
-    gap: var(--space-3);
-  }
+  .masonry { column-count: 2; column-gap: var(--space-3); }
+}
+/* Inside a column, each tile must not split across columns. */
+.masonry > .tile {
+  display: inline-block;       /* required for column-wrap */
+  width: 100%;
+  margin: 0 0 var(--space-4);  /* bottom gap between tiles in a column */
+  break-inside: avoid;         /* prevent splitting across columns */
+  page-break-inside: avoid;    /* legacy fallback */
+  -webkit-column-break-inside: avoid;
 }
 
 /* ========== Responsive header ==========
