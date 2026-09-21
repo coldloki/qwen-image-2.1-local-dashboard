@@ -207,10 +207,14 @@ function doLayout(masonry) {
   if (!tiles.length) return;
   const w = masonry.clientWidth;
   if (!w) return;
-  // Column count: 4 desktop, 3 mid, 2 narrow.
+  // Column count: 4 default desktop, 3 mid, 2 narrow. (The gallery
+  // host itself is capped by `main { max-width: 1100px }`, so on a
+  // 1100px viewport the gallery width is ~1050px — comfortably 4
+  // columns at ~250px each. We only drop to 3 below 940px and to
+  // 2 below 640px.)
   let cols = 4;
-  if (w < 1100) cols = 3;
-  if (w < 800) cols = 2;
+  if (w < 940) cols = 3;
+  if (w < 640) cols = 2;
   const gap = 13.6; // --space-3 in px (matches toolbar)
   const colWidth = (w - gap * (cols - 1)) / cols;
   // Set all widths first (so aspect-ratio can resolve to height).
