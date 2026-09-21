@@ -8,8 +8,8 @@
   --bg-3: #2a3956;
   --fg: #e2e8f0;
   --muted: #94a3b8;
-  --accent: #7aa2f7;
-  --accent-2: #bb9af7;
+  --accent: #e96e00;
+  --accent-2: #c72e60;
   --border: #1e293b;
   --tile-bg: #1e293b;
   --shadow: rgba(0,0,0,0.45);
@@ -23,8 +23,8 @@
   --bg-3: #f1f5f9;
   --fg: #0f172a;
   --muted: #64748b;
-  --accent: #2563eb;
-  --accent-2: #7c3aed;
+  --accent: #e96e00;
+  --accent-2: #c72e60;
   --border: #e2e8f0;
   --tile-bg: #f8fafc;
   --shadow: rgba(15,23,42,0.18);
@@ -1060,6 +1060,7 @@ dialog.lightbox .lb-counter {
 dialog.lightbox .lb-actions {
   margin-top: 0.6rem;
   display: flex;
+  flex-wrap: nowrap;
   gap: 0.5rem;
 }
 dialog.lightbox .lb-actions .iconbtn {
@@ -1068,6 +1069,10 @@ dialog.lightbox .lb-actions .iconbtn {
   border: 1px solid rgba(255,255,255,0.3);
   font-size: 1rem;
   padding: 0.45rem 0.7rem;
+  white-space: nowrap;
+}
+dialog.lightbox .lb-actions .iconbtn span {
+  white-space: nowrap;
 }
 dialog.lightbox .lb-actions .iconbtn:hover {
   background: rgba(255,255,255,0.22);
