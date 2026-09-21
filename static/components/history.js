@@ -100,6 +100,7 @@ export async function render(root) {
         <button class="lb-nav lb-next" id="lb-next" aria-label="Next">
           ${icon('chevron-down', { size: 22, cls: 'lb-chevron-right' })}
         </button>
+        <div class="lb-lineage" id="lb-lineage" hidden></div>
         <div class="lb-actions">
           <button class="iconbtn primary" id="lb-download" title="Download this image">
             ${icon('arrow-down-tray', { size: 15 })}
@@ -521,7 +522,71 @@ function openLightbox(i) {
   barEl.textContent =
     `${it.ts} · ${it.width}×${it.height} · ${it.steps} steps · ` +
     `seed ${it.seed ?? '?'} · ${it.elapsed_s}s\n${it.prompt}`;
+  paintLineage(it);
   dialog.showModal();
+}
+
+// Async lineage — fire-and-forget. Shows a row of pills only when
+// the current item has ancestors (refs/parents) or descendants
+// (upscaled versions). Each pill is a mini thumb that opens the
+// corresponding entry's lightbox.
+let lineageEl = null;
+async function paintLineage(it) {
+  if (!lineageEl) lineageEl = document.getElementById('lb-lineage');
+  lineageEl.innerHTML = '';
+  lineageEl.hidden = true;
+  try {
+    const data = await api(`/api/lineage/${it.id}`);
+    const anc = data.ancestors || [];
+    const desc = data.descendants || [];
+    if (!anc.length && !desc.length) return;
+    lineageEl.hidden = false;
+    if (anc.length) {
+      const label = document.createElement('span');
+      label.className = 'lb-lineage-label';
+      label.textContent = 'Sources';
+      lineageEl.appendChild(label);
+      for (const a of anc) lineageEl.appendChild(lineagePill(a));
+    }
+    if (desc.length) {
+      const label = document.createElement('span');
+      label.className = 'lb-lineage-label';
+      label.textContent = 'Upscaled versions';
+      lineageEl.appendChild(label);
+      for (const d of desc) lineageEl.appendChild(lineagePill(d));
+    }
+  } catch (err) {
+    // 404 or backend hiccup — hide the panel quietly.
+    console.warn('lineage fetch failed', err);
+  }
+}
+
+function lineagePill(it) {
+  const a = document.createElement('button');
+  a.className = 'lb-lineage-pill';
+  a.title = it.prompt;
+  const img = document.createElement('img');
+  img.src = it.thumb_url;
+  img.alt = '';
+  img.loading = 'lazy';
+  a.appendChild(img);
+  const badge = document.createElement('span');
+  badge.className = 'lb-lineage-kind';
+  // Heroicons only — no emoji glyphs. Show an arrow-up for upscaled
+  // descendants, a swatch for ref-driven generations, nothing for plain.
+  if (it.kind === 'upscale') {
+    badge.innerHTML = icon('arrow-up', { size: 11 });
+    badge.title = 'Upscaled';
+  } else if (it.reference_image_ids?.length) {
+    badge.innerHTML = icon('swatch', { size: 11 });
+    badge.title = 'Reference images used';
+  }
+  a.appendChild(badge);
+  a.addEventListener('click', () => {
+    const idx = view.findIndex((v) => v.id === it.id);
+    if (idx >= 0) openLightbox(idx);
+  });
+  return a;
 }
 
 function nav(delta) {

@@ -1298,6 +1298,76 @@ async def get_history(image_id: str) -> dict:
         conn.close()
 
 
+@app.get("/api/lineage/{image_id}")
+async def get_lineage(image_id: str) -> dict:
+    """Return ancestors (parents) and descendants (children) of an item.
+
+    A parent is any row whose `parent_id == image_id`. We also walk the
+    reference_image_ids chain backwards: each referenced id is a logical
+    ancestor. Self-references (item referencing itself) are skipped.
+
+    Children are found by parent_id == image_id. Multiple upscaled
+    versions of the same source are returned as separate children.
+    """
+    conn = db()
+    try:
+        # Find the item itself first (needed to start the walk).
+        self_row = conn.execute(
+            "SELECT * FROM history WHERE id = ?", (image_id,)
+        ).fetchone()
+        if not self_row:
+            raise HTTPException(404, "not found")
+
+        seen = {image_id}
+        ancestors: list[dict] = []
+
+        # Walk back through parent_id.
+        cursor_id = self_row["parent_id"]
+        while cursor_id and cursor_id not in seen:
+            seen.add(cursor_id)
+            row = conn.execute(
+                "SELECT * FROM history WHERE id = ?", (cursor_id,)
+            ).fetchone()
+            if not row:
+                break
+            ancestors.append(_row_to_dict(row))
+            cursor_id = row["parent_id"]
+
+        # Walk back through reference_image_ids (each is a logical source).
+        refs_json = self_row["reference_image_ids"]
+        if refs_json:
+            import json as _json
+            try:
+                ref_ids = _json.loads(refs_json)
+            except Exception:
+                ref_ids = []
+            for ref_id in ref_ids:
+                if ref_id in seen:
+                    continue
+                seen.add(ref_id)
+                row = conn.execute(
+                    "SELECT * FROM history WHERE id = ?", (ref_id,)
+                ).fetchone()
+                if row:
+                    ancestors.append(_row_to_dict(row))
+
+        # Walk forward through descendants (parent_id == image_id).
+        descendants = [
+            _row_to_dict(r) for r in conn.execute(
+                "SELECT * FROM history WHERE parent_id = ? ORDER BY ts DESC",
+                (image_id,),
+            ).fetchall()
+        ]
+
+        return {
+            "self": _row_to_dict(self_row),
+            "ancestors": ancestors,
+            "descendants": descendants,
+        }
+    finally:
+        conn.close()
+
+
 @app.delete("/api/history/{image_id}")
 async def delete_history(image_id: str) -> dict:
     conn = db()
