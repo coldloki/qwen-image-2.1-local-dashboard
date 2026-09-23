@@ -686,7 +686,7 @@ function paintRefs() {
     cell.dataset.idx = String(i);
     if (id) {
       // We need the thumb url — fetch history if we don't have it cached.
-      cell.innerHTML = `<img alt="" data-id="${id}"><span class="ref-slot-x" title="Remove">${icon('x-mark', { size: 12 })}</span>`;
+      cell.innerHTML = `<img alt="" data-id="${id}"><span class="ref-slot-x" role="button" aria-label="Remove reference" title="Remove">${icon('x-mark', { size: 14 })}</span>`;
       resolveThumb(id).then(url => {
         const img = cell.querySelector('img');
         if (img) img.src = url;
@@ -696,7 +696,9 @@ function paintRefs() {
     }
     cell.addEventListener('click', (e) => {
       if (e.target.closest('.ref-slot-x')) {
+        e.stopPropagation();
         refImageIds.splice(i, 1);
+        refImageIds = refImageIds.filter(x => x); // compact, drop nulls
         paintRefs();
         return;
       }
