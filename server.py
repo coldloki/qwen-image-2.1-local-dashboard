@@ -310,6 +310,24 @@ def _ext_for(format_: str) -> str:
     return {"png": "png", "jpeg": "jpg", "webp": "webp"}.get(format_, "png")
 
 
+def _normalize_size_to_multiple_of_32(size: str) -> str:
+    """SGLang's Qwen-Image 2.1 requires width AND height to be divisible by
+    32, otherwise the request 500s with 'height and width must be divisible
+    by 32'. Round each dim to the nearest multiple of 32 so a stray 720 or
+    1536-like value doesn't kill the request.
+    """
+    try:
+        w_str, h_str = (size or "").lower().split("x", 1)
+        w, h = int(w_str), int(h_str)
+    except (ValueError, AttributeError):
+        return size  # let the brain produce its own error if it can't parse
+    def _round32(v: int) -> int:
+        # Round to nearest multiple of 32; clamp to a sane minimum of 256.
+        rounded = max(32, round(v / 32) * 32)
+        return rounded
+    return f"{_round32(w)}x{_round32(h)}"
+
+
 def _save_original(raw: bytes, ext: str) -> tuple[str, Path]:
     image_id = uuid.uuid4().hex[:12]
     filename = f"{image_id}.{ext}"
@@ -707,7 +725,7 @@ async def generate(req: GenerateRequest, request: Request):
         "model": "Qwen/Qwen-Image-2.1",
         "prompt": req.prompt,
         "negative_prompt": req.negative,
-        "size": req.size,
+        "size": _normalize_size_to_multiple_of_32(req.size),
         "num_inference_steps": req.steps,
         "guidance_scale": req.guidance,
         "true_cfg_scale": req.true_cfg_scale,

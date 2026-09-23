@@ -34,7 +34,9 @@ export async function render(root) {
   const size = settings.default_size || '1024x1024';
   // Add two panoramic options to the dropdown. The model handles 3:1
   // ratios fine; anything more extreme starts to distort.
-  const allSizes = ['1024x1024','1280x720','720x1280','1536x1024','1024x1536','1920x768','2048x512','768x768','512x512'];
+  // Sizes must be divisible by 32 (SGLang Qwen-Image 2.1 requirement).
+  // 1024 / 1152 / 1280 / 1536 / 1792 are all multiples of 32.
+  const allSizes = ['1024x1024','1152x896','896x1152','1280x832','832x1280','1536x1024','1024x1536','1920x768','2048x512','768x768','512x512'];
   const steps = parseInt(settings.default_steps || '28', 10);
   const guidance = parseFloat(settings.default_guidance || '4.0');
   const seed = parseInt(settings.default_seed || '-1', 10);
