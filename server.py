@@ -43,7 +43,7 @@ from pydantic import BaseModel, Field
 # ============================================================ Config
 
 ROOT = Path(__file__).resolve().parent
-DATA_DIR = ROOT / "data"
+DATA_DIR = Path(os.environ.get("STUDIO_DATA_DIR", ROOT / "data"))
 IMAGES_DIR = DATA_DIR / "images"
 THUMBS_DIR = DATA_DIR / "thumbs"
 STATIC_DIR = ROOT / "static"
@@ -722,7 +722,10 @@ async def generate(req: GenerateRequest, request: Request):
             "finished_at": None,
         }
 
-    server_url = _get_setting("server_url", BRAIN_URL)
+    # The brain URL is set via the BRAIN_URL env at container start; the
+    # persisted setting may be stale from a previous host-mode run, so
+    # always prefer the env-supplied value over the stored one.
+    server_url = os.environ.get("BRAIN_URL") or _get_setting("server_url", BRAIN_URL)
     has_refs = bool(req.reference_image_ids)
 
     # When reference images are provided, route to the brain's edits
@@ -1187,7 +1190,10 @@ async def upscale(req: UpscaleRequest, request: Request):
             "finished_at": None,
         }
 
-    server_url = _get_setting("server_url", BRAIN_URL)
+    # The brain URL is set via the BRAIN_URL env at container start; the
+    # persisted setting may be stale from a previous host-mode run, so
+    # always prefer the env-supplied value over the stored one.
+    server_url = os.environ.get("BRAIN_URL") or _get_setting("server_url", BRAIN_URL)
     src_ext = src_path.suffix.lstrip(".").lower()
     src_ftype = {"png": "image/png", "jpg": "image/jpeg",
                  "jpeg": "image/jpeg", "webp": "image/webp"}.get(src_ext, "image/png")

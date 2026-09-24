@@ -1,0 +1,18 @@
+# Build-time exclusions
+.git
+.gitignore
+.env
+data
+*.db
+*.sqlite
+__pycache__
+**/__pycache__
+*.pyc
+.venv
+venv
+node_modules
+tests/artifacts
+push_to_public.py
+_push_temp.py
+*.md
+!README.md
