@@ -328,6 +328,40 @@ def _normalize_size_to_multiple_of_32(size: str) -> str:
     return f"{_round32(w)}x{_round32(h)}"
 
 
+def _is_brain_upscale_known_bug(status_code: int, body: str) -> bool:
+    """Detect the SGLang 0.5.20cu130 Real-ESRGAN upscale crash:
+    ``RuntimeError: expected input[1, 16, ...] to have 12 channels,
+    but got 16 channels instead``. Returns True when the response looks
+    like that specific bug so the upscale handler can fall back to a
+    local Pillow LANCZOS resize instead of failing the request.
+    """
+    if status_code != 500:
+        return False
+    body_lc = (body or "").lower()
+    return (
+        "realesrgan" in body_lc
+        or "expected input" in body_lc and "to have 12 channels" in body_lc
+        or "but got 16 channels" in body_lc
+        or "weight of size [64, 12, 3, 3]" in body_lc
+    )
+
+
+def _pillow_upscale_to_disk(src_path: Path, dest_path: Path, scale: int) -> None:
+    """Resize src_path by `scale` x with LANCZOS, save to dest_path."""
+    with Image.open(src_path) as im:
+        if im.mode not in ("RGB", "RGBA", "L"):
+            im = im.convert("RGBA" if "A" in im.getbands() else "RGB")
+        new_size = (im.width * scale, im.height * scale)
+        out = im.resize(new_size, Image.LANCZOS)
+        ext = dest_path.suffix.lstrip(".").lower()
+        save_kwargs: dict[str, Any] = {}
+        if ext in ("jpg", "jpeg"):
+            save_kwargs["quality"] = 95
+        if ext == "png":
+            save_kwargs["optimize"] = True
+        out.save(dest_path, **save_kwargs)
+
+
 def _save_original(raw: bytes, ext: str) -> tuple[str, Path]:
     image_id = uuid.uuid4().hex[:12]
     filename = f"{image_id}.{ext}"
@@ -1260,6 +1294,61 @@ async def upscale(req: UpscaleRequest, request: Request):
                             err = f"internal: {brain_task.exception()}"
                             yield _sse({"error": err})
                         break
+
+                # ── Pillow fallback for the known SGLang Real-ESRGAN bug ──
+                # SGLang v0.5.20cu130 returns HTTP 500 at the upscaling phase
+                # because the Real-ESRGAN kernel receives the latent (16 channels)
+                # instead of the decoded RGB (12 channels across 4 spatial dims).
+                # When the brain 500s that way AND we recognize the bug signature,
+                # fall back to a local Pillow LANCZOS resize of the source image so
+                # the user still gets an upscaled result instead of a dead end.
+                active = _GEN_ACTIVE.get(rid, {})
+                active_err = active.get("error") or ""
+                if (
+                    active_err.startswith("brain HTTP 500:")
+                    and src_path.exists()
+                ):
+                    try:
+                        new_id, dest_path = _save_original(b"", src_ext)
+                        _pillow_upscale_to_disk(src_path, dest_path, req.scale)
+                        with Image.open(dest_path) as im:
+                            new_w, new_h = im.size
+                        try:
+                            thumb_path = THUMBS_DIR / f"{new_id}.webp"
+                            _make_thumb(dest_path, thumb_path)
+                        except Exception as _thumb_exc:
+                            print(f"[upscale fallback thumb] {_thumb_exc}", file=sys.stderr)
+                        conn = db()
+                        try:
+                            conn.execute(
+                                """INSERT INTO history
+                                   (id, ts, prompt, negative, width, height, steps, guidance,
+                                    seed, output_format, filename, elapsed_s, size_bytes,
+                                    has_alpha, parent_id, kind, reference_image_ids)
+                                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                                (new_id, time.time_ns(),
+                                 prompt, negative, new_w, new_h, steps, 1.0,
+                                 -1, src["output_format"], dest_path.name,
+                                 time.time() - t0, dest_path.stat().st_size,
+                                 False, req.history_id, "upscale", json.dumps([])),
+                            )
+                            conn.commit()
+                        finally:
+                            conn.close()
+                        if rid in _GEN_ACTIVE:
+                            _GEN_ACTIVE[rid]["phase"] = "done"
+                            _GEN_ACTIVE[rid]["progress"] = 1.0
+                            _GEN_ACTIVE[rid]["error"] = None
+                        yield _sse({
+                            "phase": "done",
+                            "progress": 1.0,
+                            "msg": "Brain upscale unavailable; used local LANCZOS fallback.",
+                            "result_image_ids": [new_id],
+                            "fallback": "pillow-lanczos",
+                        })
+                    except Exception as fb_exc:
+                        print(f"[upscale fallback] {fb_exc}", file=sys.stderr)
+
         finally:
             stop.set()
             tick_task.cancel()

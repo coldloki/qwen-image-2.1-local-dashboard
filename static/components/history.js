@@ -658,7 +658,7 @@ function openUpscaleModal(item) {
         window.dispatchEvent(new Event('history:invalidate'));
         m.close();
       } else {
-        status.innerHTML = '<div class="upscale-error">Upscale failed. See server log.</div>';
+        status.innerHTML = `<div class="upscale-error">Upscale failed${lastErr ? ': ' + lastErr : '. See server log.'}</div>`;
         go.disabled = false; cancel.disabled = false;
       }
     } catch (e) {
@@ -688,6 +688,8 @@ async function runUpscale(historyId, scale, onProgress) {
   const dec = new TextDecoder();
   let buf = '';
   let resultId = null;
+  let lastErr = null;
+  let lastFallback = null;
   while (true) {
     const { value, done } = await reader.read();
     if (done) break;
@@ -700,11 +702,15 @@ async function runUpscale(historyId, scale, onProgress) {
       if (!line) continue;
       try {
         const evt = JSON.parse(line.slice(6));
-        if (evt.error) { onProgress(1, evt.error); return null; }
         if (evt.progress != null) onProgress(evt.progress, evt.msg || `phase ${evt.phase || '...'} (${Math.round(evt.progress*100)}%)`);
         if (evt.result_image_ids && evt.result_image_ids.length) {
           resultId = evt.result_image_ids[0];
         }
+        // Track errors but don't bail — the server may still emit a
+        // fallback success event right after (LANCZOS upscale replaces
+        // the brain's broken Real-ESRGAN path).
+        if (evt.error) lastErr = evt.error;
+        if (evt.fallback) lastFallback = evt.fallback;
       } catch {}
     }
   }
